@@ -1,0 +1,5 @@
+jupyterlab>=4.2
+ipykernel>=6.29
+ipywidgets>=8.1
+Flask>=3.0
+ultralytics>=8.3

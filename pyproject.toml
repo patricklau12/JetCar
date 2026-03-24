@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jetcar"
+version = "0.1.0"
+description = "Workshop-friendly Jetson rover project with a browser teleop panel and optional notebooks"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "Pillow>=10.0",
+  "Flask>=3.0",
+  "pyserial>=3.5",
+  "ultralytics>=8.3",
+]
+
+[tool.setuptools.packages.find]
+include = ["jetcar*"]
