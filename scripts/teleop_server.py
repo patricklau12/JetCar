@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Any
 from io import BytesIO
 
 import cv2
@@ -29,6 +30,25 @@ if str(PROJECT_ROOT) not in sys.path:
 from jetcar.camera import open_camera, read_rgb_frame
 from jetcar.motion import MotionCalibration, apply_drive_calibration
 from jetcar.vision import build_lane_mask
+
+
+AUTO_SETTINGS_DEFAULTS = {
+    "drive": 0.0,
+    "max_drive": 0.06,
+    "camera_center_offset": 0.0,
+    "k_offset": 0.90,
+    "k_heading": 0.70,
+    "k_curve": 0.75,
+    "turn_mix": 0.24,
+    "loop_hz": 2.0,
+    "center_tolerance": 0.06,
+    "min_steer": 0.12,
+    "forward_floor": 0.0,
+    "motor_bias": 0.00,
+    "step_up": 0.02,
+    "stuck_shift_px": 10.0,
+    "curve_slowdown": 0.18,
+}
 
 
 HTML = """<!doctype html>
@@ -228,6 +248,10 @@ HTML = """<!doctype html>
           <button id="manualRight">Right</button>
         </div>
         <div class="row-buttons" style="margin-top: 12px;">
+          <button id="pulseForwardLeft">Pulse Fwd Left</button>
+          <button id="pulseForwardRight">Pulse Fwd Right</button>
+        </div>
+        <div class="row-buttons" style="margin-top: 12px;">
           <button id="calForward">Cal Fwd</button>
           <button id="calBack">Cal Back</button>
           <button id="calLeft">Cal Left</button>
@@ -240,6 +264,7 @@ HTML = """<!doctype html>
           <button id="calReset">Reset Cal</button>
         </div>
         <p class="small">Saved calibration acts as the minimum speed for manual buttons, joystick drive, auto mode, and the CLI rover script.</p>
+        <p class="small">Diagonal pulses keep both wheels forward. Use `Manual Speed` as the outer wheel speed, `Diag Inner` as the inner wheel ratio, and `Cal Pulse s` as the pulse length.</p>
         <p class="mono" id="calStatus"></p>
       </div>
       <div class="card panel">
@@ -250,21 +275,30 @@ HTML = """<!doctype html>
             <div><label>Max Throttle<br><input id="maxThrottle" type="range" min="0.1" max="0.8" step="0.05" value="0.35"></label></div>
             <div><label>Update Hz<br><input id="hz" type="range" min="5" max="30" step="1" value="12"></label></div>
             <div><label>Manual Speed<br><input id="manualSpeed" type="range" min="0.00" max="0.60" step="0.01" value="0.00"></label></div>
+            <div><label>Diag Inner<br><input id="diagInnerRatio" type="range" min="0.20" max="1.00" step="0.05" value="0.55"></label></div>
             <div><label>Cal Step<br><input id="calStep" type="range" min="0.01" max="0.10" step="0.01" value="0.01"></label></div>
             <div><label>Cal Pulse s<br><input id="calPulse" type="range" min="0.20" max="3.00" step="0.10" value="2.00"></label></div>
             <div><label>Auto Drive<br><input id="autoDrive" type="range" min="0.00" max="0.50" step="0.01" value="0.00"></label></div>
-            <div><label>Auto Max Drive<br><input id="autoMaxDrive" type="range" min="0.02" max="0.60" step="0.01" value="0.12"></label></div>
+            <div><label>Auto Max Drive<br><input id="autoMaxDrive" type="range" min="0.02" max="0.60" step="0.01" value="0.06"></label></div>
+            <div><label>Cam Center<br><input id="autoCenterOffset" type="range" min="-0.50" max="0.50" step="0.01" value="0.00"></label></div>
             <div><label>Auto K Offset<br><input id="autoKOffset" type="range" min="0.2" max="2.0" step="0.05" value="0.90"></label></div>
-            <div><label>Auto K Heading<br><input id="autoKHeading" type="range" min="0.0" max="2.0" step="0.05" value="0.50"></label></div>
+            <div><label>Auto K Heading<br><input id="autoKHeading" type="range" min="0.0" max="2.0" step="0.05" value="0.70"></label></div>
+            <div><label>Auto K Curve<br><input id="autoKCurve" type="range" min="0.0" max="2.0" step="0.05" value="0.75"></label></div>
             <div><label>Auto Turn Mix<br><input id="autoTurnMix" type="range" min="0.10" max="1.20" step="0.05" value="0.24"></label></div>
             <div><label>Loop Hz<br><input id="autoHz" type="range" min="1" max="15" step="1" value="2"></label></div>
             <div><label>Center Tol<br><input id="autoCenterTol" type="range" min="0.01" max="0.25" step="0.01" value="0.06"></label></div>
-            <div><label>Min Steer<br><input id="autoMinSteer" type="range" min="0.00" max="0.40" step="0.01" value="0.10"></label></div>
+            <div><label>Min Steer<br><input id="autoMinSteer" type="range" min="0.00" max="0.40" step="0.01" value="0.12"></label></div>
             <div><label>Fwd Floor<br><input id="autoForwardFloor" type="range" min="0.00" max="0.40" step="0.01" value="0.00"></label></div>
+            <div><label>Curve Slow<br><input id="autoCurveSlowdown" type="range" min="0.00" max="0.30" step="0.01" value="0.18"></label></div>
             <div><label>Motor Bias<br><input id="autoMotorBias" type="range" min="-0.12" max="0.12" step="0.01" value="0.00"></label></div>
             <div><label>Step Up<br><input id="autoStepUp" type="range" min="0.00" max="0.08" step="0.01" value="0.02"></label></div>
             <div><label>Stuck Px<br><input id="autoStuckShift" type="range" min="2" max="60" step="1" value="10"></label></div>
           </div>
+          <div class="row-buttons" style="margin-top: 12px;">
+            <button id="saveAuto">Save Auto</button>
+            <button id="resetAuto">Reset Auto</button>
+          </div>
+          <p class="small">Saved auto settings are written to <span class="mono">.teleop_auto_settings.json</span> and reused on the next launch.</p>
         </details>
         <p class="mono" id="log"></p>
       </div>
@@ -272,10 +306,11 @@ HTML = """<!doctype html>
         <details class="drawer">
           <summary>Mask Tuning</summary>
           <div class="drawer-body">
-            <p class="small">Beginner mode: pick the line color, pick the floor color, and let the mask compare color difference. Contrast and HSV stay available as advanced fallbacks.</p>
+            <p class="small">Beginner mode: pick the line color, pick the floor color, and let the mask compare color difference. If the tape is always black, use Black Tape first. Dark Line, Contrast, and HSV stay available as fallbacks. RGB picks only affect Color Difference mode.</p>
             <div class="row-buttons" style="margin: 12px 0;">
               <button id="pickLine">Pick Line</button>
               <button id="pickFloor">Pick Floor</button>
+              <button id="presetBlack">Black Tape</button>
               <button id="presetGreen">Green Track</button>
               <button id="presetYellow">Yellow On Red</button>
               <button id="refreshMask">Refresh Mask</button>
@@ -285,8 +320,9 @@ HTML = """<!doctype html>
               <div class="swatch"><span class="swatch-chip" id="floorSwatch"></span><span id="floorSampleLabel">Floor sample</span></div>
             </div>
             <div class="mini-grid">
-              <div><label>Detector<br><select id="detectorMode"><option value="color_difference">Color Difference</option><option value="contrast_line">Contrast / Shape</option><option value="hsv_color">HSV Color</option></select></label></div>
+              <div><label>Detector<br><select id="detectorMode"><option value="black_tape">Black Tape / Adaptive</option><option value="color_difference">Color Difference</option><option value="dark_line">Dark Line / Anti-Glare</option><option value="contrast_line">Contrast / Shape</option><option value="hsv_color">HSV Color</option></select></label></div>
               <div><label>Crop Top<br><input id="cropTop" type="range" min="0.0" max="0.8" step="0.05" value="0.35"></label></div>
+              <div><label>Proc Scale<br><input id="processingScale" type="range" min="0.30" max="1.00" step="0.05" value="1.00"></label></div>
               <div><label>Tolerance<br><input id="colorTolerance" type="range" min="8" max="90" step="1" value="42"></label></div>
               <div><label>Line Margin<br><input id="colorMargin" type="range" min="0" max="40" step="1" value="8"></label></div>
               <div><label>Patch px<br><input id="sampleRadius" type="range" min="4" max="36" step="1" value="14"></label></div>
@@ -302,7 +338,7 @@ HTML = """<!doctype html>
               <div><label>S pad<br><input id="sPad" type="range" min="0" max="120" step="1" value="35"></label></div>
               <div><label>V pad<br><input id="vPad" type="range" min="0" max="120" step="1" value="35"></label></div>
             </div>
-            <p class="advanced-note">If Color Difference struggles, try Contrast / Shape or HSV Color as advanced fallback modes.</p>
+            <p class="advanced-note">Black Tape and Dark Line use brightness and local contrast, so the RGB swatches are ignored there. Use the color picks only for Color Difference.</p>
           </div>
         </details>
         <p class="mono" id="maskConfig"></p>
@@ -312,9 +348,29 @@ HTML = """<!doctype html>
         <img id="rgb" class="clickable" alt="RGB stream">
       </div>
       <div class="card panel stream">
+        <div class="big">RGB Heatmap</div>
+        <img id="rgbHeatmap" alt="Detector heatmap on live RGB frame">
+        <p class="mono" id="rgbHeatmapNote">full-frame detector score</p>
+      </div>
+      <div class="card panel stream">
+        <div class="big">Mask Input</div>
+        <img id="maskInput" alt="Scaled detector input">
+        <p class="mono" id="maskInputNote">exact detector feed</p>
+      </div>
+      <div class="card panel stream">
+        <div class="big">Mask Heatmap</div>
+        <img id="maskHeatmap" alt="Detector heatmap">
+        <p class="mono" id="maskHeatmapNote">warm = stronger detector score</p>
+      </div>
+      <div class="card panel stream">
         <div class="big">Live Mask</div>
         <img id="mask" alt="Mask stream">
         <p class="mono" id="maskDecision">decision=-</p>
+      </div>
+      <div class="card panel stream">
+        <div class="big">Trajectory</div>
+        <img id="trajectory" alt="Trajectory centerline">
+        <p class="mono" id="trajectoryNote">centerline + ego gap</p>
       </div>
     </div>
   </div>
@@ -342,6 +398,7 @@ HTML = """<!doctype html>
     let calibration = {forward: 0, back: 0, left: 0, right: 0};
     let calDirection = null;
     let calSpeed = 0;
+    let autoSettingsLoaded = false;
 
     function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
@@ -389,6 +446,45 @@ HTML = """<!doctype html>
       document.getElementById('floorSwatch').style.background = floorCss;
       document.getElementById('lineSampleLabel').innerText = rgbLabel('Line', config.line_r, config.line_g, config.line_b);
       document.getElementById('floorSampleLabel').innerText = rgbLabel('Floor', config.floor_r, config.floor_g, config.floor_b);
+    }
+
+    function autoSettingsFromControls() {
+      return {
+        drive: parseFloat(document.getElementById('autoDrive').value),
+        max_drive: parseFloat(document.getElementById('autoMaxDrive').value),
+        camera_center_offset: parseFloat(document.getElementById('autoCenterOffset').value),
+        k_offset: parseFloat(document.getElementById('autoKOffset').value),
+        k_heading: parseFloat(document.getElementById('autoKHeading').value),
+        k_curve: parseFloat(document.getElementById('autoKCurve').value),
+        turn_mix: parseFloat(document.getElementById('autoTurnMix').value),
+        loop_hz: parseFloat(document.getElementById('autoHz').value),
+        center_tolerance: parseFloat(document.getElementById('autoCenterTol').value),
+        min_steer: parseFloat(document.getElementById('autoMinSteer').value),
+        forward_floor: parseFloat(document.getElementById('autoForwardFloor').value),
+        curve_slowdown: parseFloat(document.getElementById('autoCurveSlowdown').value),
+        motor_bias: parseFloat(document.getElementById('autoMotorBias').value),
+        step_up: parseFloat(document.getElementById('autoStepUp').value),
+        stuck_shift_px: parseFloat(document.getElementById('autoStuckShift').value),
+      };
+    }
+
+    function applyAutoSettings(settings) {
+      if (!settings) return;
+      if (settings.drive !== undefined) document.getElementById('autoDrive').value = settings.drive;
+      if (settings.max_drive !== undefined) document.getElementById('autoMaxDrive').value = settings.max_drive;
+      if (settings.camera_center_offset !== undefined) document.getElementById('autoCenterOffset').value = settings.camera_center_offset;
+      if (settings.k_offset !== undefined) document.getElementById('autoKOffset').value = settings.k_offset;
+      if (settings.k_heading !== undefined) document.getElementById('autoKHeading').value = settings.k_heading;
+      if (settings.k_curve !== undefined) document.getElementById('autoKCurve').value = settings.k_curve;
+      if (settings.turn_mix !== undefined) document.getElementById('autoTurnMix').value = settings.turn_mix;
+      if (settings.loop_hz !== undefined) document.getElementById('autoHz').value = settings.loop_hz;
+      if (settings.center_tolerance !== undefined) document.getElementById('autoCenterTol').value = settings.center_tolerance;
+      if (settings.min_steer !== undefined) document.getElementById('autoMinSteer').value = settings.min_steer;
+      if (settings.forward_floor !== undefined) document.getElementById('autoForwardFloor').value = settings.forward_floor;
+      if (settings.curve_slowdown !== undefined) document.getElementById('autoCurveSlowdown').value = settings.curve_slowdown;
+      if (settings.motor_bias !== undefined) document.getElementById('autoMotorBias').value = settings.motor_bias;
+      if (settings.step_up !== undefined) document.getElementById('autoStepUp').value = settings.step_up;
+      if (settings.stuck_shift_px !== undefined) document.getElementById('autoStuckShift').value = settings.stuck_shift_px;
     }
 
     function draw() {
@@ -578,6 +674,18 @@ HTML = """<!doctype html>
       document.getElementById('log').innerText = JSON.stringify(data, null, 2);
     }
 
+    async function sendRawPulse(left, right, duration, note) {
+      holdUntilMs = Date.now() + Math.max(0, duration) * 1000 + 150;
+      const r = await fetch('/api/pulse_raw', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({left, right, duration_s: duration})
+      });
+      const data = await r.json();
+      document.getElementById('status').innerText = note || data.status;
+      document.getElementById('log').innerText = JSON.stringify(data, null, 2);
+    }
+
     function renderWarnings(warnings) {
       const node = document.getElementById('warnings');
       if (!warnings.length) {
@@ -591,6 +699,7 @@ HTML = """<!doctype html>
       return {
         detector_mode: document.getElementById('detectorMode').value,
         crop_top_ratio: parseFloat(document.getElementById('cropTop').value),
+        processing_scale: parseFloat(document.getElementById('processingScale').value),
         color_distance_threshold: parseFloat(document.getElementById('colorTolerance').value),
         color_distance_margin: parseFloat(document.getElementById('colorMargin').value),
         h_min: parseInt(document.getElementById('hMin').value, 10),
@@ -612,6 +721,7 @@ HTML = """<!doctype html>
       maskConfig = config;
       document.getElementById('detectorMode').value = config.detector_mode || 'color_difference';
       document.getElementById('cropTop').value = config.crop_top_ratio;
+      document.getElementById('processingScale').value = config.processing_scale ?? 1.0;
       document.getElementById('colorTolerance').value = config.color_distance_threshold;
       document.getElementById('colorMargin').value = config.color_distance_margin;
       document.getElementById('hMin').value = config.h_min;
@@ -627,8 +737,15 @@ HTML = """<!doctype html>
       document.getElementById('sPad').value = config.s_margin;
       document.getElementById('vPad').value = config.v_margin;
       updateSampleSwatches(config);
+      const usesSamples = (config.detector_mode || 'color_difference') === 'color_difference';
+      document.getElementById('rgbHeatmapNote').innerText =
+        `full frame heat=${config.detector_mode || 'color_difference'} score map`;
+      document.getElementById('maskInputNote').innerText =
+        `scale=${Number(config.processing_scale ?? 1.0).toFixed(2)} crop=${Number(config.crop_top_ratio).toFixed(2)} mode=${config.detector_mode || 'color_difference'}`;
+      document.getElementById('maskHeatmapNote').innerText =
+        `heat=${config.detector_mode || 'color_difference'} score map`;
       document.getElementById('maskConfig').innerText =
-        `mode=${config.detector_mode || 'color_difference'} | crop=${config.crop_top_ratio.toFixed(2)} blur=${config.blur_kernel} morph=${config.morph_kernel} | tol=${Number(config.color_distance_threshold).toFixed(0)} margin=${Number(config.color_distance_margin).toFixed(0)} | line=rgb(${config.line_r},${config.line_g},${config.line_b}) floor=rgb(${config.floor_r},${config.floor_g},${config.floor_b})`;
+        `mode=${config.detector_mode || 'color_difference'} | scale=${Number(config.processing_scale ?? 1.0).toFixed(2)} crop=${config.crop_top_ratio.toFixed(2)} blur=${config.blur_kernel} morph=${config.morph_kernel} | tol=${Number(config.color_distance_threshold).toFixed(0)} margin=${Number(config.color_distance_margin).toFixed(0)} | line=rgb(${config.line_r},${config.line_g},${config.line_b}) floor=rgb(${config.floor_r},${config.floor_g},${config.floor_b}) | samples=${usesSamples ? 'active' : 'ignored'}`;
     }
 
     async function fetchMaskConfig() {
@@ -641,6 +758,27 @@ HTML = """<!doctype html>
       const r = await fetch('/api/calibration');
       calibration = await r.json();
       renderCalibration();
+    }
+
+    async function fetchAutoSettings() {
+      const r = await fetch('/api/auto/settings');
+      const data = await r.json();
+      applyAutoSettings(data);
+      autoSettingsLoaded = true;
+    }
+
+    async function saveAutoSettings(statusMessage = 'saved auto settings') {
+      const r = await fetch('/api/auto/settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(autoSettingsFromControls())
+      });
+      const data = await r.json();
+      applyAutoSettings(data);
+      autoSettingsLoaded = true;
+      document.getElementById('status').innerText = statusMessage;
+      document.getElementById('log').innerText = JSON.stringify(data, null, 2);
+      return data;
     }
 
     async function pushMaskConfig() {
@@ -664,7 +802,11 @@ HTML = """<!doctype html>
     function refreshFramesOnce() {
       const t = Date.now();
       document.getElementById('rgb').src = `/camera/rgb.jpg?t=${t}`;
+      document.getElementById('rgbHeatmap').src = `/camera/rgb_heatmap.jpg?t=${t}`;
+      document.getElementById('maskInput').src = `/camera/mask_input.jpg?t=${t}`;
+      document.getElementById('maskHeatmap').src = `/camera/mask_heatmap.jpg?t=${t}`;
       document.getElementById('mask').src = `/camera/mask.jpg?t=${t}`;
+      document.getElementById('trajectory').src = `/camera/trajectory.jpg?t=${t}`;
     }
 
     async function refreshStatus() {
@@ -679,13 +821,19 @@ HTML = """<!doctype html>
         document.getElementById('configLine').innerText =
           `${data.camera.source.toUpperCase()} camera ${data.camera.width}x${data.camera.height} | serial ${data.serial.port} @ ${data.serial.baudrate}`;
         autoEnabled = !!(data.auto && data.auto.running);
+        if (!autoSettingsLoaded && data.auto && data.auto.settings) {
+          applyAutoSettings(data.auto.settings);
+          autoSettingsLoaded = true;
+        }
         if (data.auto) {
           document.getElementById('status').innerText = data.auto.running ? `auto: ${data.auto.last_status}` : document.getElementById('status').innerText;
           if (data.auto.last_analysis) {
             document.getElementById('maskDecision').innerText =
               `decision=${data.auto.last_analysis.decision || '-'}\n${data.auto.last_analysis.decision_reason || ''}`;
+            document.getElementById('trajectoryNote').innerText =
+              `bottom=${(data.auto.last_analysis.bottom_offset_norm ?? data.auto.last_analysis.offset_norm).toFixed(3)} curve=${(data.auto.last_analysis.curvature_norm ?? 0).toFixed(3)} steer=${data.auto.last_analysis.steer.toFixed(3)}`;
             document.getElementById('metrics').innerText =
-              `decision=${data.auto.last_analysis.decision || '-'} offset=${data.auto.last_analysis.offset_norm.toFixed(3)} heading=${data.auto.last_analysis.heading_norm.toFixed(3)} steer=${data.auto.last_analysis.steer.toFixed(3)} drive=${data.auto.last_analysis.drive.toFixed(2)} boost=${(data.auto.last_analysis.boost_drive ?? 0).toFixed(2)} left=${data.auto.last_analysis.left.toFixed(2)} right=${data.auto.last_analysis.right.toFixed(2)} shift=${(data.auto.last_analysis.x_shift ?? 0).toFixed(1)} stuck=${data.auto.last_analysis.stuck_steps ?? 0} search=${(data.auto.last_analysis.search_turn ?? 0).toFixed(2)} sstep=${data.auto.last_analysis.search_steps ?? 0}`;
+              `decision=${data.auto.last_analysis.decision || '-'} bottom=${(data.auto.last_analysis.bottom_offset_norm ?? data.auto.last_analysis.offset_norm).toFixed(3)} gap=${data.auto.last_analysis.offset_norm.toFixed(3)} heading=${data.auto.last_analysis.heading_norm.toFixed(3)} curve=${(data.auto.last_analysis.curvature_norm ?? 0).toFixed(3)} recenter=${(data.auto.last_analysis.recenter_priority ?? 0).toFixed(2)} steer=${data.auto.last_analysis.steer.toFixed(3)} drive=${data.auto.last_analysis.drive.toFixed(2)} mix=${(data.auto.last_analysis.mix_used ?? 0).toFixed(2)} left=${data.auto.last_analysis.left.toFixed(2)} right=${data.auto.last_analysis.right.toFixed(2)} shift=${(data.auto.last_analysis.x_shift ?? 0).toFixed(1)} stuck=${data.auto.last_analysis.stuck_steps ?? 0} search=${(data.auto.last_analysis.search_turn ?? 0).toFixed(2)} sstep=${data.auto.last_analysis.search_steps ?? 0}`;
           }
         }
         renderWarnings(data.warnings || []);
@@ -749,6 +897,16 @@ HTML = """<!doctype html>
       const speed = manualFloorSeed(parseFloat(document.getElementById('manualSpeed').value));
       return {steer: 1.0, throttle: 0.0, note: 'manual right', mix: speed};
     });
+    document.getElementById('pulseForwardLeft').addEventListener('click', async () => {
+      const speed = manualFloorSeed(parseFloat(document.getElementById('manualSpeed').value));
+      const innerRatio = clamp(parseFloat(document.getElementById('diagInnerRatio').value), 0.0, 1.0);
+      await sendRawPulse(speed * innerRatio, speed, parseFloat(document.getElementById('calPulse').value), 'pulse: forward-left');
+    });
+    document.getElementById('pulseForwardRight').addEventListener('click', async () => {
+      const speed = manualFloorSeed(parseFloat(document.getElementById('manualSpeed').value));
+      const innerRatio = clamp(parseFloat(document.getElementById('diagInnerRatio').value), 0.0, 1.0);
+      await sendRawPulse(speed, speed * innerRatio, parseFloat(document.getElementById('calPulse').value), 'pulse: forward-right');
+    });
     document.getElementById('calForward').addEventListener('click', () => { calDirection = 'forward'; calSpeed = calibrationSeed('forward'); renderCalibration(); });
     document.getElementById('calBack').addEventListener('click', () => { calDirection = 'back'; calSpeed = calibrationSeed('back'); renderCalibration(); });
     document.getElementById('calLeft').addEventListener('click', () => { calDirection = 'left'; calSpeed = calibrationSeed('left'); renderCalibration(); });
@@ -794,23 +952,11 @@ HTML = """<!doctype html>
       document.getElementById('status').innerText = 'calibration reset';
     });
     document.getElementById('startAuto').addEventListener('click', async () => {
+      const saved = await saveAutoSettings('saved auto settings, starting auto');
       const r = await fetch('/api/auto/start', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          drive: parseFloat(document.getElementById('autoDrive').value),
-          max_drive: parseFloat(document.getElementById('autoMaxDrive').value),
-          k_offset: parseFloat(document.getElementById('autoKOffset').value),
-          k_heading: parseFloat(document.getElementById('autoKHeading').value),
-          turn_mix: parseFloat(document.getElementById('autoTurnMix').value),
-          loop_hz: parseFloat(document.getElementById('autoHz').value),
-          center_tolerance: parseFloat(document.getElementById('autoCenterTol').value),
-          min_steer: parseFloat(document.getElementById('autoMinSteer').value),
-          forward_floor: parseFloat(document.getElementById('autoForwardFloor').value),
-          motor_bias: parseFloat(document.getElementById('autoMotorBias').value),
-          step_up: parseFloat(document.getElementById('autoStepUp').value),
-          stuck_shift_px: parseFloat(document.getElementById('autoStuckShift').value),
-        })
+        body: JSON.stringify(saved)
       });
       const data = await r.json();
       autoEnabled = true;
@@ -830,8 +976,19 @@ HTML = """<!doctype html>
       document.getElementById('log').innerText = JSON.stringify(data, null, 2);
       refreshStatus();
     });
+    document.getElementById('saveAuto').addEventListener('click', async () => {
+      await saveAutoSettings();
+    });
+    document.getElementById('resetAuto').addEventListener('click', async () => {
+      const r = await fetch('/api/auto/settings/reset', {method: 'POST'});
+      const data = await r.json();
+      applyAutoSettings(data);
+      autoSettingsLoaded = true;
+      document.getElementById('status').innerText = 'auto settings reset';
+      document.getElementById('log').innerText = JSON.stringify(data, null, 2);
+    });
     document.getElementById('hz').addEventListener('input', restartLoop);
-    ['detectorMode', 'cropTop', 'colorTolerance', 'colorMargin', 'hMin', 'hMax', 'sMin', 'sMax', 'vMin', 'vMax', 'blurKernel', 'morphKernel', 'sampleRadius', 'hPad', 'sPad', 'vPad']
+    ['detectorMode', 'cropTop', 'processingScale', 'colorTolerance', 'colorMargin', 'hMin', 'hMax', 'sMin', 'sMax', 'vMin', 'vMax', 'blurKernel', 'morphKernel', 'sampleRadius', 'hPad', 'sPad', 'vPad']
       .forEach((id) => document.getElementById(id).addEventListener('input', scheduleMaskPush));
     document.getElementById('pickLine').addEventListener('click', () => {
       sampleTarget = 'line';
@@ -840,6 +997,12 @@ HTML = """<!doctype html>
     document.getElementById('pickFloor').addEventListener('click', () => {
       sampleTarget = 'floor';
       document.getElementById('status').innerText = 'click the RGB image to sample the floor color';
+    });
+    document.getElementById('presetBlack').addEventListener('click', async () => {
+      const r = await fetch('/api/mask/preset/black_tape', {method: 'POST'});
+      applyMaskConfig(await r.json());
+      sampleTarget = 'line';
+      refreshFramesOnce();
     });
     document.getElementById('presetGreen').addEventListener('click', async () => {
       const r = await fetch('/api/mask/preset/green_track', {method: 'POST'});
@@ -877,6 +1040,7 @@ HTML = """<!doctype html>
     restartStatusLoop();
     fetchMaskConfig();
     fetchCalibration();
+    fetchAutoSettings();
     renderCalibration();
   </script>
 </body>
@@ -885,9 +1049,35 @@ HTML = """<!doctype html>
 
 
 PRESETS = {
+    "black_tape": {
+        "detector_mode": "black_tape",
+        "crop_top_ratio": 0.20,      # was 0.30
+        "processing_scale": 1.00,    # was 0.50
+        "h_min": 0,
+        "h_max": 179,
+        "s_min": 0,
+        "s_max": 255,
+        "v_min": 0,
+        "v_max": 255,
+        "blur_kernel": 5,            # was 3
+        "morph_kernel": 7,           # was 9
+        "sample_radius": 14,
+        "h_margin": 8,
+        "s_margin": 35,
+        "v_margin": 35,
+        "color_distance_threshold": 42.0,
+        "color_distance_margin": 8.0,
+        "line_r": 38,
+        "line_g": 38,
+        "line_b": 38,
+        "floor_r": 170,
+        "floor_g": 160,
+        "floor_b": 150,
+    },
     "green_track": {
         "detector_mode": "color_difference",
         "crop_top_ratio": 0.35,
+        "processing_scale": 1.0,
         "h_min": 35,
         "h_max": 95,
         "s_min": 40,
@@ -912,6 +1102,7 @@ PRESETS = {
     "yellow_on_red": {
         "detector_mode": "color_difference",
         "crop_top_ratio": 0.35,
+        "processing_scale": 1.0,
         "h_min": 8,
         "h_max": 55,
         "s_min": 20,
@@ -982,10 +1173,207 @@ class MaskConfig:
             return dict(self._config)
 
 
+class AutoSettings:
+    def __init__(self, path: Path = PROJECT_ROOT / ".teleop_auto_settings.json") -> None:
+        self._lock = threading.Lock()
+        self._path = path
+        self._settings = dict(AUTO_SETTINGS_DEFAULTS)
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            if not self._path.exists():
+                return
+            data = json.loads(self._path.read_text())
+        except Exception:
+            return
+        for key in self._settings:
+            if key in data:
+                try:
+                    self._settings[key] = float(data[key])
+                except Exception:
+                    continue
+
+    def _save(self) -> None:
+        try:
+            self._path.write_text(json.dumps(self._settings, indent=2))
+        except Exception:
+            pass
+
+    def get(self) -> dict[str, float]:
+        with self._lock:
+            return dict(self._settings)
+
+    def update(self, values: dict[str, Any]) -> dict[str, float]:
+        with self._lock:
+            for key in self._settings:
+                if key not in values:
+                    continue
+                try:
+                    self._settings[key] = float(values[key])
+                except Exception:
+                    continue
+            self._save()
+            return dict(self._settings)
+
+    def reset(self) -> dict[str, float]:
+        with self._lock:
+            self._settings = dict(AUTO_SETTINGS_DEFAULTS)
+            self._save()
+            return dict(self._settings)
+
+
 def rgb_triplet_to_lab(rgb: tuple[int, int, int]) -> np.ndarray:
     swatch = np.array([[list(rgb)]], dtype=np.uint8)
     lab = cv2.cvtColor(swatch, cv2.COLOR_RGB2LAB).astype(np.float32)
     return lab[0, 0]
+
+
+def normalize_processing_scale(scale: float | int | None) -> float:
+    try:
+        value = float(scale)
+    except Exception:
+        value = 1.0
+    return float(np.clip(value, 0.30, 1.0))
+
+
+def prepare_mask_working_image(
+    image_rgb: Image.Image,
+    config: dict[str, int | float | str],
+) -> Image.Image:
+    scale = normalize_processing_scale(config.get("processing_scale", 1.0))
+    if abs(scale - 1.0) < 1e-3:
+        return image_rgb.copy()
+
+    frame = np.array(image_rgb)
+    height, width = frame.shape[:2]
+    scaled_width = max(96, int(round(width * scale)))
+    scaled_height = max(54, int(round(height * scale)))
+    resized = cv2.resize(frame, (scaled_width, scaled_height), interpolation=cv2.INTER_AREA)
+    return Image.fromarray(resized)
+
+
+def render_mask_input_preview(
+    working_rgb: Image.Image,
+    config: dict[str, int | float | str],
+) -> Image.Image:
+    frame = np.array(working_rgb)
+    mode = str(config.get("detector_mode", "contrast_line"))
+    if mode in {"black_tape", "dark_line", "contrast_line"}:
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        display = np.stack([gray] * 3, axis=-1)
+    else:
+        display = frame.copy()
+
+    crop_top_ratio = float(config.get("crop_top_ratio", 0.35))
+    crop_start = int(display.shape[0] * crop_top_ratio)
+    crop_start = max(0, min(display.shape[0], crop_start))
+    if crop_start > 0:
+        display[:crop_start, :] = (display[:crop_start, :] * 0.18).astype(np.uint8)
+        guide_y = max(0, crop_start - 1)
+        display[guide_y : min(display.shape[0], guide_y + 2), :] = np.array([64, 196, 255], dtype=np.uint8)
+    return Image.fromarray(display)
+
+
+def render_mask_heatmap_preview(
+    working_rgb: Image.Image,
+    config: dict[str, int | float | str],
+) -> Image.Image:
+    frame = np.array(working_rgb)
+    mode = str(config.get("detector_mode", "contrast_line"))
+    crop_top_ratio = float(config.get("crop_top_ratio", 0.35))
+    crop_start = int(frame.shape[0] * crop_top_ratio)
+    crop_start = max(0, min(frame.shape[0], crop_start))
+    heat = np.zeros(frame.shape[:2], dtype=np.float32)
+    roi = frame[crop_start:, :]
+    if roi.size == 0:
+        return Image.fromarray(np.zeros_like(frame))
+
+    blur_kernel = int(config.get("blur_kernel", 5))
+    morph_kernel = int(config.get("morph_kernel", 5))
+    if blur_kernel > 1:
+        k = blur_kernel if blur_kernel % 2 == 1 else blur_kernel + 1
+        roi = cv2.GaussianBlur(roi, (k, k), 0)
+
+    if mode == "black_tape":
+        lab = cv2.cvtColor(roi, cv2.COLOR_RGB2LAB)
+        lightness = lab[:, :, 0].astype(np.float32)
+        background_kernel = max(21, morph_kernel * 6 + 1)
+        if background_kernel % 2 == 0:
+            background_kernel += 1
+        local_background = cv2.GaussianBlur(lightness, (background_kernel, background_kernel), 0)
+        dark_response = np.maximum(local_background - lightness, 0.0)
+        blackhat_kernel = max(9, morph_kernel * 2 + 1)
+        if blackhat_kernel % 2 == 0:
+            blackhat_kernel += 1
+        blackhat = cv2.morphologyEx(
+            lightness.astype(np.uint8),
+            cv2.MORPH_BLACKHAT,
+            np.ones((blackhat_kernel, blackhat_kernel), np.uint8),
+        ).astype(np.float32)
+        roi_heat = 0.65 * dark_response + 0.35 * blackhat
+    elif mode == "dark_line":
+        lab = cv2.cvtColor(roi, cv2.COLOR_RGB2LAB)
+        lightness = lab[:, :, 0].astype(np.float32)
+        row_floor = np.percentile(lightness, 94, axis=1, keepdims=True)
+        row_shadow = row_floor - lightness
+        background_kernel = max(15, morph_kernel * 4 + 1)
+        if background_kernel % 2 == 0:
+            background_kernel += 1
+        local_background = cv2.GaussianBlur(lightness, (background_kernel, background_kernel), 0)
+        local_shadow = local_background - lightness
+        roi_heat = np.maximum(row_shadow, local_shadow)
+    elif mode == "contrast_line":
+        gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        roi_heat = clahe.apply(gray).astype(np.float32)
+    elif mode == "color_difference":
+        roi_lab = cv2.cvtColor(roi, cv2.COLOR_RGB2LAB).astype(np.float32)
+        line_lab = rgb_triplet_to_lab(
+            (
+                int(config.get("line_r", 72)),
+                int(config.get("line_g", 159)),
+                int(config.get("line_b", 83)),
+            )
+        )
+        floor_lab = rgb_triplet_to_lab(
+            (
+                int(config.get("floor_r", 143)),
+                int(config.get("floor_g", 99)),
+                int(config.get("floor_b", 82)),
+            )
+        )
+        dist_line = np.linalg.norm(roi_lab - line_lab, axis=2)
+        dist_floor = np.linalg.norm(roi_lab - floor_lab, axis=2)
+        roi_heat = np.maximum(0.0, dist_floor - dist_line)
+    else:
+        hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV).astype(np.float32)
+        h_mid = (float(config.get("h_min", 0)) + float(config.get("h_max", 179))) / 2.0
+        s_mid = (float(config.get("s_min", 0)) + float(config.get("s_max", 255))) / 2.0
+        v_mid = (float(config.get("v_min", 0)) + float(config.get("v_max", 255))) / 2.0
+        dh = np.minimum(np.abs(hsv[:, :, 0] - h_mid), 180.0 - np.abs(hsv[:, :, 0] - h_mid))
+        ds = np.abs(hsv[:, :, 1] - s_mid)
+        dv = np.abs(hsv[:, :, 2] - v_mid)
+        roi_heat = np.maximum(0.0, 255.0 - (2.2 * dh + 0.45 * ds + 0.35 * dv))
+
+    heat[crop_start:, :] = roi_heat.astype(np.float32)
+    active = heat[crop_start:, :]
+    if active.size == 0:
+        display = np.zeros_like(frame)
+    else:
+        low = float(np.percentile(active, 5))
+        high = float(np.percentile(active, 99))
+        if high - low < 1e-3:
+            normalized = np.zeros_like(heat, dtype=np.uint8)
+        else:
+            normalized = np.clip((heat - low) * (255.0 / (high - low)), 0, 255).astype(np.uint8)
+        if crop_start > 0:
+            normalized[:crop_start, :] = (normalized[:crop_start, :] * 0.15).astype(np.uint8)
+            guide_y = max(0, crop_start - 1)
+            normalized[guide_y : min(normalized.shape[0], guide_y + 2), :] = 255
+        display = cv2.applyColorMap(normalized, cv2.COLORMAP_TURBO)
+        display = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(display)
 
 
 def select_target_component(
@@ -1006,6 +1394,8 @@ def select_target_component(
     image_center_x = width / 2.0 if anchor_x is None else float(anchor_x)
     bottom_band_start = int(height * 0.68)
     bottom_touch_start = int(height * 0.92)
+    hard_bottom_reach = int(height * (0.62 if loose else 0.68))
+    min_bottom_reach = int(height * (0.72 if loose else 0.78))
     best_label = 0
     best_score = None
 
@@ -1027,6 +1417,7 @@ def select_target_component(
 
         bottom_y = int(ys.max())
         bottom_hits = int(np.count_nonzero(ys >= bottom_touch_start))
+        bottom_band_hits = int(np.count_nonzero(ys >= bottom_band_start))
 
         bottom_xs = xs[ys == bottom_y]
         bottom_x = float(bottom_xs.mean()) if bottom_xs.size else float(xs.mean())
@@ -1038,8 +1429,17 @@ def select_target_component(
         min_area = 80 if loose else 120
         min_height = max(12, int(height * (0.08 if loose else 0.11)))
         min_bottom_hits = 2 if loose else 5
+        min_bottom_band_hits = 2 if loose else 4
         min_aspect = 0.75 if loose else 1.0
         min_fill = 0.08 if loose else 0.14
+        if area < min_area or comp_height < min_height:
+            continue
+        if bottom_y < hard_bottom_reach:
+            continue
+        if bottom_band_hits <= 0:
+            continue
+        if aspect_ratio < max(0.32, min_aspect * 0.38):
+            continue
         side_penalty = 0.0
         if prefer_side != 0:
             side = 1 if center_x > width / 2.0 else -1
@@ -1051,9 +1451,9 @@ def select_target_component(
             + abs(center_x - image_center_x) * 0.7
             + top_penalty * 0.5
             + max(0, bottom_band_start - bottom_y) * 2.4
-            + max(0, min_area - area) * 0.35
-            + max(0, min_height - comp_height) * 2.2
+            + max(0, min_bottom_reach - bottom_y) * 1.5
             + max(0, min_bottom_hits - bottom_hits) * 12.0
+            + max(0, min_bottom_band_hits - bottom_band_hits) * 10.0
             + max(0.0, min_aspect - aspect_ratio) * 40.0
             + max(0.0, min_fill - fill_ratio) * 120.0
             + side_penalty
@@ -1062,6 +1462,7 @@ def select_target_component(
             - min(aspect_ratio, 8.0) * 18.0
             - min(fill_ratio, 1.0) * 30.0
             - min(bottom_hits, 80) * 1.2
+            - min(bottom_band_hits, 140) * 0.9
         )
         if best_score is None or score < best_score:
             best_score = score
@@ -1073,6 +1474,214 @@ def select_target_component(
     filtered = np.zeros_like(mask)
     filtered[labels == best_label] = 255
     return filtered
+
+
+def select_dark_ribbon_component(
+    mask: np.ndarray,
+    lightness_roi: np.ndarray,
+    anchor_x: float | None = None,
+    prefer_side: int = 0,
+    loose: bool = False,
+) -> np.ndarray:
+    """
+    Choose the best dark *ribbon-like* component using soft scoring, not strict
+    pass/fail gates. This is more stable for glossy black tape that may be broken
+    by reflections.
+    """
+    binary = (mask > 0).astype(np.uint8)
+    if int(binary.sum()) == 0:
+        return np.zeros_like(mask)
+
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if count <= 1:
+        return np.zeros_like(mask)
+
+    height, width = mask.shape[:2]
+    target_center = float(width / 2.0 if anchor_x is None else np.clip(anchor_x, 0.0, width - 1.0))
+    if prefer_side != 0 and anchor_x is None:
+        target_center = width * (0.64 if prefer_side > 0 else 0.36)
+
+    bottom_band_y = max(0, height - max(10, int(height * 0.18)))
+    expected_min_area = max(60, int(mask.size * (0.0008 if loose else 0.0012)))
+    preferred_area = max(180, int(mask.size * (0.0030 if loose else 0.0040)))
+    preferred_width = max(8, int(width * (0.025 if loose else 0.030)))
+    best_label = 0
+    best_score = None
+    fallback_label = 0
+    fallback_area = -1
+
+    for label in range(1, count):
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        if area <= 0:
+            continue
+        if area > fallback_area:
+            fallback_area = area
+            fallback_label = label
+
+        left = int(stats[label, cv2.CC_STAT_LEFT])
+        top = int(stats[label, cv2.CC_STAT_TOP])
+        comp_width = int(stats[label, cv2.CC_STAT_WIDTH])
+        comp_height = int(stats[label, cv2.CC_STAT_HEIGHT])
+        center_x = float(centroids[label][0])
+        component = labels == label
+        ys, xs = np.where(component)
+        if ys.size == 0:
+            continue
+
+        bottom_y = int(ys.max())
+        top_y = int(ys.min())
+        vertical_span = bottom_y - top_y + 1
+        bottom_band = ys >= bottom_band_y
+        bottom_touch = 1.0 if np.any(bottom_band) else 0.0
+        bottom_x = float(xs[bottom_band].mean()) if np.any(bottom_band) else float(xs.mean())
+
+        sampled_rows = np.unique(np.linspace(top_y, bottom_y, min(28, max(10, vertical_span)), dtype=int))
+        row_widths: list[int] = []
+        row_centers: list[float] = []
+        for row in sampled_rows:
+            row_xs = np.flatnonzero(component[row])
+            if row_xs.size == 0:
+                continue
+            splits = np.where(np.diff(row_xs) > 1)[0] + 1
+            runs = np.split(row_xs, splits)
+            if not runs:
+                continue
+            best_run = max(runs, key=len)
+            row_widths.append(int(len(best_run)))
+            row_centers.append(float((best_run[0] + best_run[-1]) / 2.0))
+        if not row_widths:
+            continue
+
+        median_width = float(np.median(row_widths))
+        p80_width = float(np.percentile(row_widths, 80))
+        width_std = float(np.std(row_widths))
+        fill_ratio = area / float(max(1, comp_width * comp_height))
+        aspect_ratio = comp_height / float(max(1, comp_width))
+        curvature = float(np.std(np.diff(row_centers))) if len(row_centers) >= 3 else 0.0
+
+        comp_lightness = lightness_roi[component].astype(np.float32)
+        light_p20 = float(np.percentile(comp_lightness, 20))
+        light_mean = float(comp_lightness.mean())
+        darkness_score = (255.0 - light_p20) * 0.75 + (255.0 - light_mean) * 0.25
+
+        area_score = min(area / float(preferred_area), 1.6)
+        width_score = min(median_width / float(preferred_width), 2.0)
+        span_score = min(vertical_span / float(max(24, int(height * 0.28))), 1.8)
+        bottom_score = 1.0 - min(abs(bottom_x - target_center) / float(max(1, width * 0.45)), 1.5)
+        center_score = 1.0 - min(abs(center_x - target_center) / float(max(1, width * 0.50)), 1.5)
+        stability_score = 1.0 - min(width_std / float(max(2.0, median_width)), 1.2)
+        ribbon_score = min(fill_ratio / 0.20, 1.4)
+
+        penalty = 0.0
+        if area < expected_min_area:
+            penalty += 1.6
+        if median_width < max(4.0, preferred_width * 0.45):
+            penalty += 2.0
+        if p80_width < max(5.0, preferred_width * 0.55):
+            penalty += 1.4
+        if vertical_span < max(18, int(height * 0.10)):
+            penalty += 1.2
+        if fill_ratio < 0.04:
+            penalty += 1.0
+        if aspect_ratio < 0.6:
+            penalty += 0.8
+        if curvature > max(2.0, median_width * 0.35):
+            penalty += 0.8
+        if prefer_side != 0:
+            side = 1 if center_x > width / 2.0 else -1
+            if side != prefer_side:
+                penalty += 0.6
+
+        score = (
+            darkness_score * 0.020
+            + area_score * 20.0
+            + width_score * 24.0
+            + span_score * 18.0
+            + bottom_touch * 12.0
+            + bottom_score * 14.0
+            + center_score * 6.0
+            + stability_score * 10.0
+            + ribbon_score * 8.0
+            - penalty * 12.0
+        )
+
+        if best_score is None or score > best_score:
+            best_score = score
+            best_label = label
+
+    chosen = best_label if best_label != 0 else fallback_label
+    if chosen == 0:
+        return np.zeros_like(mask)
+
+    selected = np.zeros_like(mask)
+    selected[labels == chosen] = 255
+    return selected
+
+
+
+def solidify_component_mask(mask: np.ndarray, anchor_x: float | None = None) -> np.ndarray:
+    binary = (mask > 0).astype(np.uint8)
+    if binary.sum() == 0:
+        return np.zeros_like(mask)
+
+    filled = np.zeros_like(mask)
+    width = mask.shape[1]
+    target_center = float(width / 2.0 if anchor_x is None else anchor_x)
+    last_center: float | None = None
+    last_width: int | None = None
+    for row in range(mask.shape[0] - 1, -1, -1):
+        xs = np.flatnonzero(binary[row] > 0)
+        if xs.size == 0:
+            continue
+
+        runs: list[tuple[int, int]] = []
+        run_start = int(xs[0])
+        prev_x = int(xs[0])
+        for x_val in xs[1:]:
+            x_int = int(x_val)
+            if x_int != prev_x + 1:
+                runs.append((run_start, prev_x))
+                run_start = x_int
+            prev_x = x_int
+        runs.append((run_start, prev_x))
+
+        row_target = last_center if last_center is not None else target_center
+        best_left = runs[0][0]
+        best_right = runs[0][1]
+        best_score = None
+        for cand_left, cand_right in runs:
+            cand_center = (cand_left + cand_right) / 2.0
+            cand_width = cand_right - cand_left + 1
+            score = abs(cand_center - row_target)
+            if last_width is not None:
+                score += abs(cand_width - last_width) * 0.35
+            if best_score is None or score < best_score:
+                best_score = score
+                best_left = cand_left
+                best_right = cand_right
+
+        left = int(best_left)
+        right = int(best_right)
+        current_width = right - left + 1
+
+        # Keep the ribbon width stable so sparse edge pixels do not explode into wedges.
+        if last_width is not None:
+            center = int(round((left + right) / 2.0))
+            if current_width <= 2:
+                target_width = max(4, last_width)
+            else:
+                target_width = min(current_width, max(6, int(round(last_width * 1.35))))
+            half = max(2, int(round(target_width / 2.0)))
+            left = max(0, center - half)
+            right = min(mask.shape[1] - 1, center + half)
+
+        filled[row, left : right + 1] = 255
+        last_center = (left + right) / 2.0
+        last_width = right - left + 1
+
+    close_kernel = np.ones((5, 3), np.uint8)
+    filled = cv2.morphologyEx(filled, cv2.MORPH_CLOSE, close_kernel)
+    return filled
 
 
 def build_contrast_line_mask(
@@ -1107,10 +1716,480 @@ def build_contrast_line_mask(
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-    mask = select_target_component(mask, anchor_x=anchor_x, prefer_side=prefer_side, loose=loose)
+    mask = select_dark_ribbon_component(mask, roi, anchor_x=anchor_x, prefer_side=prefer_side, loose=loose)
     full_mask = np.zeros_like(gray)
     full_mask[crop_start:, :] = mask
     return Image.fromarray(full_mask, mode="L")
+
+
+def build_dark_line_mask(
+    image_rgb: Image.Image,
+    crop_top_ratio: float = 0.35,
+    blur_kernel: int = 5,
+    morph_kernel: int = 5,
+    anchor_x: float | None = None,
+    prefer_side: int = 0,
+    loose: bool = False,
+) -> Image.Image:
+    frame = np.array(image_rgb)
+    lab = cv2.cvtColor(frame, cv2.COLOR_RGB2LAB)
+    lightness = lab[:, :, 0]
+    crop_start = int(lightness.shape[0] * crop_top_ratio)
+    roi = lightness[crop_start:, :]
+    if roi.size == 0:
+        return Image.fromarray(np.zeros_like(lightness), mode="L")
+
+    if blur_kernel > 1:
+        k = blur_kernel if blur_kernel % 2 == 1 else blur_kernel + 1
+        roi = cv2.GaussianBlur(roi, (k, k), 0)
+
+    roi_f = roi.astype(np.float32)
+    row_floor = np.percentile(roi_f, 90 if loose else 94, axis=1, keepdims=True)
+    row_shadow = row_floor - roi_f
+    row_noise = np.std(roi_f, axis=1, keepdims=True)
+
+    background_kernel = max(15, morph_kernel * 4 + 1)
+    if background_kernel % 2 == 0:
+        background_kernel += 1
+    local_background = cv2.GaussianBlur(roi_f, (background_kernel, background_kernel), 0)
+    local_shadow = local_background - roi_f
+
+    darkness = np.maximum(row_shadow, local_shadow)
+    darkness_gate = np.maximum(12.0 if loose else 16.0, row_noise * (0.95 if loose else 1.20))
+    lightness_cap = np.minimum(row_floor - (8.0 if loose else 12.0), 150.0 if loose else 140.0)
+    mask = np.where((darkness >= darkness_gate) & (roi_f <= lightness_cap), 255, 0).astype(np.uint8)
+
+    min_pixels = max(120, int(mask.size * 0.0012))
+    if int(np.count_nonzero(mask)) < min_pixels:
+        relaxed_gate = np.maximum(8.0 if loose else 10.0, row_noise * (0.70 if loose else 0.90))
+        relaxed_cap = np.minimum(row_floor - 6.0, 160.0 if loose else 148.0)
+        mask = np.where((darkness >= relaxed_gate) & (roi_f <= relaxed_cap), 255, 0).astype(np.uint8)
+
+    if morph_kernel > 1:
+        kernel = np.ones((morph_kernel, morph_kernel), np.uint8)
+        # Close first so glare streaks inside dark tape become fillable holes.
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+    mask = select_target_component(mask, anchor_x=anchor_x, prefer_side=prefer_side, loose=loose)
+    full_mask = np.zeros_like(lightness)
+    full_mask[crop_start:, :] = mask
+    return Image.fromarray(full_mask, mode="L")
+
+
+def build_black_tape_region_mask(
+    image_rgb: Image.Image,
+    crop_top_ratio: float = 0.35,
+    blur_kernel: int = 5,
+    morph_kernel: int = 7,
+    anchor_x: float | None = None,
+    prefer_side: int = 0,
+    loose: bool = False,
+) -> Image.Image:
+    frame = np.array(image_rgb)
+    lab = cv2.cvtColor(frame, cv2.COLOR_RGB2LAB)
+    lightness = lab[:, :, 0]
+    crop_start = int(lightness.shape[0] * crop_top_ratio)
+    roi = lightness[crop_start:, :]
+    if roi.size == 0:
+        return Image.fromarray(np.zeros_like(lightness), mode="L")
+
+    if blur_kernel > 1:
+        k = blur_kernel if blur_kernel % 2 == 1 else blur_kernel + 1
+        roi = cv2.GaussianBlur(roi, (k, k), 0)
+
+    roi_f = roi.astype(np.float32)
+    height, width = roi.shape[:2]
+
+    background_kernel = max(25, morph_kernel * 6 + 1)
+    if background_kernel % 2 == 0:
+        background_kernel += 1
+    local_background = cv2.GaussianBlur(roi_f, (background_kernel, background_kernel), 0)
+    dark_response = np.maximum(local_background - roi_f, 0.0)
+
+    blackhat_kernel = max(11, morph_kernel * 2 + 3)
+    if blackhat_kernel % 2 == 0:
+        blackhat_kernel += 1
+    blackhat = cv2.morphologyEx(
+        roi,
+        cv2.MORPH_BLACKHAT,
+        np.ones((blackhat_kernel, blackhat_kernel), np.uint8),
+    ).astype(np.float32)
+
+    row_floor = np.percentile(roi_f, 93 if loose else 96, axis=1, keepdims=True)
+    row_shadow = np.maximum(row_floor - roi_f, 0.0)
+    score = 0.68 * dark_response + 0.22 * row_shadow + 0.10 * blackhat
+
+    valid_dark = roi_f <= np.minimum(row_floor - (4.0 if loose else 6.0), 168.0 if loose else 156.0)
+    score_values = score[valid_dark]
+    if score_values.size == 0:
+        score_values = score.reshape(-1)
+
+    thresh = float(np.percentile(score_values, 76 if loose else 82))
+    thresh = max(3.0, thresh)
+    mask = np.where((score >= thresh) & valid_dark, 255, 0).astype(np.uint8)
+
+    if int(np.count_nonzero(mask)) < max(120, int(mask.size * 0.0012)):
+        thresh = float(np.percentile(score_values, 68 if loose else 74))
+        mask = np.where((score >= max(2.0, thresh)) & (roi_f <= np.minimum(row_floor - 2.0, 176.0 if loose else 164.0)), 255, 0).astype(np.uint8)
+
+    if morph_kernel > 1:
+        close_kernel = np.ones((max(5, morph_kernel * 2 + 1), max(3, morph_kernel)), np.uint8)
+        open_kernel = np.ones((max(3, morph_kernel), max(3, morph_kernel // 2 + 1)), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_kernel)
+
+    # Keep the best dark ribbon candidate instead of every dark fragment.
+    selected = select_dark_ribbon_component(mask, roi, anchor_x=anchor_x, prefer_side=prefer_side, loose=loose)
+    if int(np.count_nonzero(selected)) == 0 and int(np.count_nonzero(mask)) > 0:
+        selected = mask
+
+    selected = solidify_component_mask(selected, anchor_x=anchor_x)
+    if morph_kernel > 1:
+        solid_kernel = np.ones((max(3, morph_kernel), max(5, morph_kernel * 2 + 1)), np.uint8)
+        selected = cv2.morphologyEx(selected, cv2.MORPH_CLOSE, solid_kernel)
+
+    full_mask = np.zeros_like(lightness)
+    full_mask[crop_start:, :] = selected
+    return Image.fromarray(full_mask, mode="L")
+
+
+
+def build_black_tape_centerline_mask(
+    image_rgb: Image.Image,
+    crop_top_ratio: float = 0.35,
+    blur_kernel: int = 5,
+    morph_kernel: int = 7,
+    anchor_x: float | None = None,
+    prefer_side: int = 0,
+    loose: bool = False,
+) -> Image.Image:
+    frame = np.array(image_rgb)
+    lab = cv2.cvtColor(frame, cv2.COLOR_RGB2LAB)
+    lightness = lab[:, :, 0]
+    crop_start = int(lightness.shape[0] * crop_top_ratio)
+    roi = lightness[crop_start:, :]
+    if roi.size == 0:
+        return Image.fromarray(np.zeros_like(lightness), mode="L")
+
+    if blur_kernel > 1:
+        k = blur_kernel if blur_kernel % 2 == 1 else blur_kernel + 1
+        roi = cv2.GaussianBlur(roi, (k, k), 0)
+
+    roi_f = roi.astype(np.float32)
+    height, width = roi.shape[:2]
+    target_center = float(width / 2.0 if anchor_x is None else np.clip(anchor_x, 0.0, width - 1.0))
+    if prefer_side != 0 and anchor_x is None:
+        target_center = width * (0.66 if prefer_side > 0 else 0.34)
+
+    background_kernel = max(21, morph_kernel * 6 + 1)
+    if background_kernel % 2 == 0:
+        background_kernel += 1
+    local_background = cv2.GaussianBlur(roi_f, (background_kernel, background_kernel), 0)
+    dark_response = np.maximum(local_background - roi_f, 0.0)
+
+    blackhat_kernel = max(9, morph_kernel * 2 + 1)
+    if blackhat_kernel % 2 == 0:
+        blackhat_kernel += 1
+    blackhat = cv2.morphologyEx(
+        roi,
+        cv2.MORPH_BLACKHAT,
+        np.ones((blackhat_kernel, blackhat_kernel), np.uint8),
+    ).astype(np.float32)
+
+    score_map = 0.65 * dark_response + 0.35 * blackhat
+    score_map = cv2.GaussianBlur(score_map, (5, 1), 0)
+    grad_x = cv2.Sobel(roi_f, cv2.CV_32F, 1, 0, ksize=3)
+
+    last_center = target_center
+    last_width = max(6, int(width * 0.04))
+    misses = 0
+    points: list[tuple[int, float, int]] = []
+    min_width = 4 if loose else 6
+    max_width = max(16, int(width * (0.14 if loose else 0.12)))
+
+    for row in range(height - 1, -1, -1):
+        row_score = score_map[row]
+        row_grad = grad_x[row]
+        row_gate = float(np.percentile(row_score, 78 if loose else 84))
+        row_gate = max(4.0, row_gate)
+
+        search_radius = int(max(18, min(width // 2, last_width * (4.0 if misses == 0 else 6.0))))
+        left_bound = max(0, int(round(last_center - search_radius)))
+        right_bound = min(width, int(round(last_center + search_radius + 1)))
+        if right_bound - left_bound < 5:
+            left_bound = max(0, int(round(last_center - 4)))
+            right_bound = min(width, int(round(last_center + 5)))
+
+        search_scores = row_score[left_bound:right_bound]
+        if search_scores.size == 0:
+            misses += 1
+            continue
+
+        candidate_count = min(8, search_scores.size)
+        candidate_rel = np.argpartition(search_scores, -candidate_count)[-candidate_count:]
+        candidate_xs = [left_bound + int(idx) for idx in candidate_rel]
+        candidate_xs.sort(key=lambda x_val: row_score[x_val], reverse=True)
+
+        best_choice: tuple[float, int, float] | None = None
+        grad_gate = max(2.0, float(np.percentile(np.abs(row_grad[left_bound:right_bound]), 72)))
+        jump_limit = max(18.0, last_width * (1.4 if misses == 0 else 2.0))
+
+        for x_val in candidate_xs:
+            valley_score = float(row_score[x_val])
+            if valley_score < row_gate:
+                continue
+
+            left_lo = max(0, x_val - max_width)
+            left_hi = max(left_lo + 1, x_val - max(2, min_width // 2))
+            right_lo = min(width - 1, x_val + max(2, min_width // 2))
+            right_hi = min(width, x_val + max_width + 1)
+            if left_hi <= left_lo or right_hi <= right_lo:
+                continue
+
+            left_edge_slice = -row_grad[left_lo:left_hi]
+            right_edge_slice = row_grad[right_lo:right_hi]
+            if left_edge_slice.size == 0 or right_edge_slice.size == 0:
+                continue
+
+            left_rel = int(np.argmax(left_edge_slice))
+            right_rel = int(np.argmax(right_edge_slice))
+            left_mag = float(left_edge_slice[left_rel])
+            right_mag = float(right_edge_slice[right_rel])
+            if min(left_mag, right_mag) < grad_gate * 0.45:
+                continue
+
+            left_edge = left_lo + left_rel
+            right_edge = right_lo + right_rel
+            width_est = right_edge - left_edge
+            if width_est < min_width or width_est > max_width:
+                continue
+
+            center_est = (left_edge + right_edge) / 2.0
+            jump = abs(center_est - last_center)
+            if points and jump > jump_limit:
+                continue
+
+            score = valley_score * 1.2 + min(left_mag, right_mag) * 1.6 + 0.25 * (left_mag + right_mag)
+            score -= jump * 0.35
+            score -= abs(width_est - last_width) * 0.18
+            if best_choice is None or score > best_choice[2]:
+                best_choice = (center_est, width_est, score)
+
+        if best_choice is None:
+            misses += 1
+            if misses > 10 and row < int(height * 0.65):
+                break
+            continue
+
+        center_est, width_est, _score = best_choice
+        if points:
+            smooth = 0.72 if misses == 0 else 0.55
+            center_est = smooth * center_est + (1.0 - smooth) * last_center
+            width_est = int(round(smooth * width_est + (1.0 - smooth) * last_width))
+
+        points.append((row, float(center_est), int(width_est)))
+        last_center = float(center_est)
+        last_width = int(np.clip(width_est, min_width, max_width))
+        misses = 0
+
+    min_points = max(10, int(height * 0.10))
+    if len(points) < min_points:
+        return Image.fromarray(np.zeros_like(lightness), mode="L")
+
+    centerline_mask = np.zeros_like(roi, dtype=np.uint8)
+    points.sort(key=lambda item: item[0])
+    draw_points = []
+    median_width = int(np.median([width_est for _, _, width_est in points]))
+    thickness = int(np.clip(max(3, round(median_width * 0.35), morph_kernel // 2 + 1), 3, 15))
+    for row, center_est, _width_est in points:
+        draw_points.append([int(round(center_est)), int(row)])
+
+    polyline = np.array(draw_points, dtype=np.int32).reshape(-1, 1, 2)
+    cv2.polylines(centerline_mask, [polyline], isClosed=False, color=255, thickness=thickness)
+    for x_px, y_px in draw_points[:: max(1, len(draw_points) // 24)]:
+        cv2.circle(centerline_mask, (int(x_px), int(y_px)), max(1, thickness // 2), 255, -1)
+
+    if morph_kernel > 1:
+        centerline_mask = cv2.morphologyEx(
+            centerline_mask,
+            cv2.MORPH_CLOSE,
+            np.ones((max(3, morph_kernel), max(3, morph_kernel)), np.uint8),
+        )
+
+    full_mask = np.zeros_like(lightness)
+    full_mask[crop_start:, :] = centerline_mask
+    return Image.fromarray(full_mask, mode="L")
+
+
+def extract_centerline_strip_from_mask(
+    mask: np.ndarray,
+    anchor_x: float | None = None,
+    prefer_side: int = 0,
+    loose: bool = False,
+    base_thickness: int = 7,
+) -> np.ndarray:
+    binary = (mask > 0).astype(np.uint8)
+    if int(binary.sum()) == 0:
+        return np.zeros_like(mask)
+
+    height, width = binary.shape[:2]
+    target_center = float(width / 2.0 if anchor_x is None else np.clip(anchor_x, 0.0, width - 1.0))
+    if prefer_side != 0 and anchor_x is None:
+        target_center = width * (0.64 if prefer_side > 0 else 0.36)
+
+    points: list[tuple[int, float, int]] = []
+    last_center: float | None = None
+    last_width: float | None = None
+    max_gap = max(10, int(height * 0.10))
+    gap = 0
+
+    for row in range(height - 1, -1, -1):
+        xs = np.flatnonzero(binary[row] > 0)
+        if xs.size == 0:
+            gap += 1
+            if points and gap > max_gap:
+                break
+            continue
+        gap = 0
+
+        splits = np.where(np.diff(xs) > 1)[0] + 1
+        runs = np.split(xs, splits)
+        if not runs:
+            continue
+
+        row_target = last_center if last_center is not None else target_center
+        best_run = None
+        best_score = None
+        for run in runs:
+            run_left = int(run[0])
+            run_right = int(run[-1])
+            run_width = run_right - run_left + 1
+            run_center = (run_left + run_right) / 2.0
+            score = run_width * 2.0 - abs(run_center - row_target) * 1.2
+            if last_width is not None:
+                score -= abs(run_width - last_width) * 0.6
+            if best_score is None or score > best_score:
+                best_score = score
+                best_run = (run_center, run_width)
+        if best_run is None:
+            continue
+
+        center, width_est = best_run
+        if last_center is not None:
+            smooth = 0.70 if gap == 0 else 0.55
+            center = smooth * center + (1.0 - smooth) * last_center
+            width_est = smooth * width_est + (1.0 - smooth) * last_width
+
+        points.append((row, float(center), int(round(width_est))))
+        last_center = float(center)
+        last_width = float(width_est)
+
+    min_points = max(12, int(height * 0.12))
+    if len(points) < min_points:
+        return np.zeros_like(mask)
+
+    points.sort(key=lambda item: item[0])
+    widths = np.array([max(1, w) for _, _, w in points], dtype=np.float32)
+    median_width = float(np.median(widths))
+    strip_width = int(np.clip(max(base_thickness, round(median_width * 0.42)), max(4, base_thickness), max(14, int(width * 0.10))))
+
+    out = np.zeros_like(mask)
+    last_draw_center: float | None = None
+    for row, center, _w in points:
+        if last_draw_center is not None:
+            center = 0.78 * center + 0.22 * last_draw_center
+        half = max(2, strip_width // 2)
+        left = max(0, int(round(center)) - half)
+        right = min(width - 1, int(round(center)) + half)
+        out[row, left:right + 1] = 255
+        last_draw_center = center
+
+    out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, np.ones((5, 3), np.uint8))
+    return out
+
+
+def refine_to_straight_strip(mask: np.ndarray, min_pixels: int = 80) -> np.ndarray:
+    binary = (mask > 0).astype(np.uint8)
+    if int(binary.sum()) < min_pixels:
+        return mask
+
+    ys, xs = np.where(binary > 0)
+    if ys.size < min_pixels:
+        return mask
+
+    vx, vy, x0, y0 = cv2.fitLine(np.column_stack([xs, ys]).astype(np.float32), cv2.DIST_L2, 0, 0.01, 0.01)
+    vx = float(vx)
+    vy = float(vy)
+    if abs(vy) < 1e-5:
+        return mask
+
+    pred_x = x0 + (ys - y0) * (vx / vy)
+    residual = np.abs(xs - pred_x)
+    if float(np.median(residual)) > 3.5:
+        return mask
+
+    height, width = mask.shape[:2]
+    strip_width = int(np.clip(max(4, round(np.median([len(np.flatnonzero(binary[r] > 0)) for r in np.unique(ys)[:min(24, len(np.unique(ys)))]] or [6]) * 0.5)), 4, 14))
+    out = np.zeros_like(mask)
+    for row in range(height):
+        x = x0 + (row - y0) * (vx / vy)
+        if not np.isfinite(x):
+            continue
+        x_i = int(round(float(x)))
+        half = max(2, strip_width // 2)
+        left = max(0, x_i - half)
+        right = min(width - 1, x_i + half)
+        out[row, left:right + 1] = 255
+    return out
+
+
+def build_black_tape_mask(
+    image_rgb: Image.Image,
+    crop_top_ratio: float = 0.35,
+    blur_kernel: int = 5,
+    morph_kernel: int = 7,
+    anchor_x: float | None = None,
+    prefer_side: int = 0,
+    loose: bool = False,
+) -> Image.Image:
+    region = build_black_tape_region_mask(
+        image_rgb,
+        crop_top_ratio=crop_top_ratio,
+        blur_kernel=blur_kernel,
+        morph_kernel=morph_kernel,
+        anchor_x=anchor_x,
+        prefer_side=prefer_side,
+        loose=loose,
+    )
+    region_arr = np.array(region)
+    if int(np.count_nonzero(region_arr)) >= 120:
+        center_strip = extract_centerline_strip_from_mask(
+            region_arr,
+            anchor_x=anchor_x,
+            prefer_side=prefer_side,
+            loose=loose,
+            base_thickness=max(5, morph_kernel),
+        )
+        if int(np.count_nonzero(center_strip)) >= 60:
+            return Image.fromarray(refine_to_straight_strip(center_strip, min_pixels=60), mode="L")
+        return Image.fromarray(region_arr, mode="L")
+
+    centerline = build_black_tape_centerline_mask(
+        image_rgb,
+        crop_top_ratio=crop_top_ratio,
+        blur_kernel=blur_kernel,
+        morph_kernel=morph_kernel,
+        anchor_x=anchor_x,
+        prefer_side=prefer_side,
+        loose=loose,
+    )
+    center_arr = np.array(centerline)
+    if int(np.count_nonzero(center_arr)) >= 60:
+        return Image.fromarray(refine_to_straight_strip(center_arr, min_pixels=60), mode="L")
+
+    return region
+
 
 
 def build_color_difference_mask(
@@ -1144,10 +2223,26 @@ def build_color_difference_mask(
 
     threshold = max(6.0, float(color_distance_threshold))
     margin = max(0.0, float(color_distance_margin))
+    line_floor_delta = line_lab - floor_lab
+    line_floor_span = float(np.linalg.norm(line_floor_delta))
+
     mask = (dist_line <= threshold).astype(np.uint8) * 255
-    if np.linalg.norm(line_lab - floor_lab) > 1.0:
+    if line_floor_span > 1.0:
         closer_to_line = (dist_line + margin) < dist_floor
-        mask = np.where(closer_to_line, mask, 0).astype(np.uint8)
+
+        # Project each pixel onto the sampled floor->line color axis so the line can
+        # remain valid even when the same tape appears brighter or dimmer across the frame.
+        axis = line_floor_delta / line_floor_span
+        rel = roi_lab - floor_lab
+        along = rel[..., 0] * axis[0] + rel[..., 1] * axis[1] + rel[..., 2] * axis[2]
+        orth = np.linalg.norm(rel - along[..., None] * axis, axis=2)
+        projection = along / line_floor_span
+
+        projection_gate = 0.42 if loose else 0.50
+        orth_gate = max(16.0, threshold * (0.78 if loose else 0.62))
+        axis_mask = (projection >= projection_gate) & (orth <= orth_gate)
+
+        mask = np.where(closer_to_line | axis_mask, 255, 0).astype(np.uint8)
 
     if morph_kernel > 1:
         kernel = np.ones((morph_kernel, morph_kernel), np.uint8)
@@ -1167,7 +2262,28 @@ def build_tracking_mask(
     prefer_side: int = 0,
     loose: bool = False,
 ) -> Image.Image:
+    image_rgb = prepare_mask_working_image(image_rgb, config)
     mode = str(config.get("detector_mode", "contrast_line"))
+    if mode == "black_tape":
+        return build_black_tape_mask(
+            image_rgb,
+            crop_top_ratio=float(config["crop_top_ratio"]),
+            blur_kernel=int(config["blur_kernel"]),
+            morph_kernel=int(config["morph_kernel"]),
+            anchor_x=anchor_x,
+            prefer_side=prefer_side,
+            loose=loose,
+        )
+    if mode == "dark_line":
+        return build_dark_line_mask(
+            image_rgb,
+            crop_top_ratio=float(config["crop_top_ratio"]),
+            blur_kernel=int(config["blur_kernel"]),
+            morph_kernel=int(config["morph_kernel"]),
+            anchor_x=anchor_x,
+            prefer_side=prefer_side,
+            loose=loose,
+        )
     if mode == "color_difference":
         return build_color_difference_mask(
             image_rgb,
@@ -1258,6 +2374,264 @@ def estimate_strip_pose(
     return x_near, x_far, row_near, row_far, "fit"
 
 
+def collect_centerline_points(
+    mask: np.ndarray,
+    row_ratios: list[float] | None = None,
+) -> list[tuple[float, float]]:
+    if row_ratios is None:
+        row_ratios = [0.96, 0.92, 0.88, 0.84, 0.80, 0.74, 0.68, 0.62, 0.56, 0.50, 0.44, 0.38]
+    points: list[tuple[float, float]] = []
+    for ratio in row_ratios:
+        x, row = compute_row_center(mask, ratio)
+        if x is None:
+            continue
+        points.append((float(x), float(row)))
+
+    if len(points) >= 3:
+        return points
+
+    ys, xs = np.where(mask > 0)
+    if xs.size < 40:
+        return points
+
+    sample_rows = np.linspace(max(float(ys.min()), mask.shape[0] * 0.38), float(ys.max()), 9)
+    for row_f in sample_rows:
+        row = int(np.clip(round(row_f), 0, mask.shape[0] - 1))
+        row_xs = xs[ys == row]
+        if row_xs.size == 0:
+            nearby = np.abs(ys - row) <= 2
+            row_xs = xs[nearby]
+        if row_xs.size == 0:
+            continue
+        points.append((float(row_xs.mean()), float(row)))
+    points.sort(key=lambda item: item[1], reverse=True)
+    return points
+
+
+def summarize_centerline(mask: np.ndarray) -> dict[str, float] | None:
+    points = collect_centerline_points(mask)
+    if len(points) < 3:
+        return None
+
+    mask_h, mask_w = mask.shape[:2]
+    lateral_scale = max(mask_w / 2.0, 1.0)
+    longitudinal_scale = max(mask_h - 1, 1.0)
+
+    long_vals = np.array([(mask_h - 1 - y_px) / longitudinal_scale for _, y_px in points], dtype=np.float32)
+    lateral_vals = np.array([(x_px - (mask_w / 2.0)) / lateral_scale for x_px, _ in points], dtype=np.float32)
+    order = np.argsort(long_vals)
+    long_vals = long_vals[order]
+    lateral_vals = lateral_vals[order]
+
+    unique_longs, unique_idx = np.unique(long_vals, return_index=True)
+    unique_lats = lateral_vals[unique_idx]
+    if unique_longs.size < 2:
+        return None
+
+    q_bottom = np.quantile(unique_longs, 0.06)
+    q_near, q_mid, q_far = np.quantile(unique_longs, [0.15, 0.50, 0.85])
+    bottom_offset = float(np.interp(q_bottom, unique_longs, unique_lats))
+    near_offset = float(np.interp(q_near, unique_longs, unique_lats))
+    mid_offset = float(np.interp(q_mid, unique_longs, unique_lats))
+    far_offset = float(np.interp(q_far, unique_longs, unique_lats))
+
+    seg_near = max(float(q_mid - q_near), 0.06)
+    seg_far = max(float(q_far - q_mid), 0.06)
+    heading_near = (mid_offset - near_offset) / seg_near
+    heading_far = (far_offset - mid_offset) / seg_far
+    heading_norm = float(np.clip(0.40 * (0.60 * heading_near + 0.40 * heading_far), -1.0, 1.0))
+
+    curvature_raw = (heading_far - heading_near) / max(float(q_far - q_near), 0.10)
+    curvature_norm = float(np.clip(0.22 * curvature_raw, -1.0, 1.0))
+    future_offset = float(np.clip(0.65 * mid_offset + 0.35 * far_offset, -1.0, 1.0))
+    path_span = float(np.clip(q_far - q_near, 0.0, 1.0))
+
+    return {
+        "bottom_offset_norm": float(np.clip(bottom_offset, -1.0, 1.0)),
+        "near_offset_norm": float(np.clip(near_offset, -1.0, 1.0)),
+        "mid_offset_norm": float(np.clip(mid_offset, -1.0, 1.0)),
+        "far_offset_norm": float(np.clip(far_offset, -1.0, 1.0)),
+        "future_offset_norm": future_offset,
+        "heading_norm": heading_norm,
+        "curvature_norm": curvature_norm,
+        "path_span": path_span,
+    }
+
+
+def render_trajectory_prediction(mask: np.ndarray, camera_center_offset: float = 0.0) -> Image.Image:
+    plot_h = 420
+    plot_w = 420
+    margin_left = 58
+    margin_right = 20
+    margin_top = 28
+    margin_bottom = 42
+    canvas = np.zeros((plot_h, plot_w, 3), dtype=np.uint8)
+    canvas[:] = (15, 20, 38)
+
+    plot_x0 = margin_left
+    plot_y0 = margin_top
+    plot_x1 = plot_w - margin_right
+    plot_y1 = plot_h - margin_bottom
+    cv2.rectangle(canvas, (plot_x0, plot_y0), (plot_x1, plot_y1), (82, 92, 128), 1)
+
+    for frac in [0.25, 0.5, 0.75]:
+        x = int(plot_x0 + frac * (plot_x1 - plot_x0))
+        y = int(plot_y0 + frac * (plot_y1 - plot_y0))
+        cv2.line(canvas, (x, plot_y0), (x, plot_y1), (40, 46, 72), 1)
+        cv2.line(canvas, (plot_x0, y), (plot_x1, y), (40, 46, 72), 1)
+
+    center_x = (plot_x0 + plot_x1) // 2
+    cv2.line(canvas, (center_x, plot_y0), (center_x, plot_y1), (95, 104, 146), 1)
+
+    points = collect_centerline_points(mask)
+    if points:
+        mask_h, mask_w = mask.shape[:2]
+        history_xy: list[tuple[int, int]] = []
+        center_offset = float(np.clip(camera_center_offset, -0.5, 0.5))
+        for x_px, y_px in points:
+            lateral = float((x_px - (mask_w / 2.0)) / max(mask_w / 2.0, 1.0)) - center_offset
+            longitudinal = float((mask_h - 1 - y_px) / max(mask_h - 1, 1.0))
+            px = int(np.clip(center_x + lateral * 0.46 * (plot_x1 - plot_x0), plot_x0, plot_x1))
+            py = int(np.clip(plot_y1 - longitudinal * (plot_y1 - plot_y0), plot_y0, plot_y1))
+            history_xy.append((px, py))
+
+        if len(history_xy) >= 2:
+            cv2.polylines(canvas, [np.array(history_xy, dtype=np.int32)], False, (92, 214, 122), 3, cv2.LINE_AA)
+        for px, py in history_xy:
+            cv2.circle(canvas, (px, py), 3, (92, 214, 122), -1)
+
+    ego_w = 12
+    ego_h = 22
+    ego_y = plot_y1 - ego_h - 4
+    cv2.rectangle(canvas, (center_x - ego_w // 2, ego_y), (center_x + ego_w // 2, ego_y + ego_h), (243, 209, 96), -1)
+
+    cv2.putText(canvas, "Trajectory Centerline", (18, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (232, 236, 252), 1, cv2.LINE_AA)
+    cv2.putText(canvas, "Lateral", (plot_w // 2 - 24, plot_h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 188, 214), 1, cv2.LINE_AA)
+    cv2.putText(canvas, "Longitudinal", (8, plot_h // 2 + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (180, 188, 214), 1, cv2.LINE_AA)
+    cv2.putText(canvas, "Centerline", (plot_w - 118, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (92, 214, 122), 1, cv2.LINE_AA)
+    cv2.putText(canvas, "Ego", (plot_w - 118, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (243, 209, 96), 1, cv2.LINE_AA)
+    return Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
+
+
+def analyze_tracking_frame(
+    frame: np.ndarray,
+    config: dict[str, int | float | str],
+    anchor_x: float | None = None,
+    last_side: int = 0,
+    prev_x_near: float | None = None,
+    camera_center_offset: float = 0.0,
+    k_offset: float = 0.90,
+    k_heading: float = 0.50,
+    k_curve: float = 0.65,
+) -> dict[str, float | int | bool | str | None]:
+    rgb_image = Image.fromarray(frame)
+    center_offset = float(np.clip(camera_center_offset, -0.5, 0.5))
+    candidate_prefs = []
+    if last_side != 0:
+        candidate_prefs.append((last_side, False))
+        candidate_prefs.append((last_side, True))
+        candidate_prefs.append((0, True))
+        candidate_prefs.append((-last_side, True))
+    else:
+        candidate_prefs.append((0, False))
+        candidate_prefs.append((0, True))
+
+    x_near = x_far = None
+    pose_mode = "none"
+    used_side = 0
+    used_loose = False
+    selected_mask: np.ndarray | None = None
+    for prefer_side, loose in candidate_prefs:
+        candidate_mask = np.array(
+            build_tracking_mask(
+                rgb_image,
+                config,
+                anchor_x=anchor_x,
+                prefer_side=prefer_side,
+                loose=loose,
+            )
+        )
+        cand_near, cand_far, _row_near, _row_far, cand_mode = estimate_strip_pose(candidate_mask, 0.82, 0.42)
+        if cand_near is not None and cand_far is not None:
+            x_near = cand_near
+            x_far = cand_far
+            selected_mask = candidate_mask
+            pose_mode = cand_mode
+            used_side = prefer_side
+            used_loose = loose
+            break
+
+    if x_near is None or x_far is None:
+        raise RuntimeError("Could not find target strip in mask.")
+
+    width = frame.shape[1]
+    next_side = int(last_side)
+    if x_near > width * 0.55:
+        next_side = 1
+    elif x_near < width * 0.45:
+        next_side = -1
+
+    image_center_x = (width / 2.0) + center_offset * (width / 2.0)
+    offset_norm = (x_near - image_center_x) / (width / 2.0)
+    heading_norm = (x_far - x_near) / (width / 2.0)
+    bottom_offset_norm = float(offset_norm)
+    mid_offset_norm = float(np.clip(offset_norm + 0.5 * heading_norm, -1.0, 1.0))
+    far_offset_norm = float(np.clip(offset_norm + heading_norm, -1.0, 1.0))
+    future_offset_norm = float(np.clip(0.65 * mid_offset_norm + 0.35 * far_offset_norm, -1.0, 1.0))
+    curvature_norm = 0.0
+    path_span = 0.0
+    if selected_mask is not None:
+        centerline = summarize_centerline(selected_mask)
+        if centerline is not None:
+            bottom_offset_norm = float(np.clip(centerline["bottom_offset_norm"] - center_offset, -1.0, 1.0))
+            near_offset_norm = float(np.clip(centerline["near_offset_norm"] - center_offset, -1.0, 1.0))
+            mid_offset_norm = float(np.clip(centerline["mid_offset_norm"] - center_offset, -1.0, 1.0))
+            far_offset_norm = float(np.clip(centerline["far_offset_norm"] - center_offset, -1.0, 1.0))
+            future_offset_norm = float(np.clip(centerline["future_offset_norm"] - center_offset, -1.0, 1.0))
+            offset_norm = float(np.clip(0.80 * bottom_offset_norm + 0.20 * near_offset_norm, -1.0, 1.0))
+            heading_norm = float(np.clip(0.55 * centerline["heading_norm"] + 0.45 * heading_norm, -1.0, 1.0))
+            curvature_norm = float(centerline["curvature_norm"])
+            path_span = float(centerline["path_span"])
+    recenter_priority = float(np.clip((abs(bottom_offset_norm) - 0.10) / 0.22, 0.0, 1.0))
+    offset_term = float(np.clip(0.85 * bottom_offset_norm + 0.15 * offset_norm, -1.0, 1.0))
+    heading_term = float(heading_norm * (1.0 - 0.88 * recenter_priority))
+    curve_term = float(curvature_norm * (1.0 - 0.96 * recenter_priority))
+    steer = float(
+        np.clip(
+            float(k_offset) * offset_term * (1.0 + 0.65 * recenter_priority)
+            + float(k_heading) * heading_term
+            + float(k_curve) * curve_term,
+            -1.0,
+            1.0,
+        )
+    )
+    steer = float(np.clip(steer, -0.55, 0.55))
+    x_shift = None if prev_x_near is None else abs(float(x_near) - float(prev_x_near))
+    metric = abs(bottom_offset_norm) + 0.55 * abs(heading_term) + 0.35 * abs(curve_term)
+    return {
+        "status": "analysis ready" if pose_mode == "row" else f"analysis ready ({pose_mode})",
+        "bottom_offset_norm": float(bottom_offset_norm),
+        "offset_norm": float(offset_norm),
+        "mid_offset_norm": float(mid_offset_norm),
+        "far_offset_norm": float(far_offset_norm),
+        "future_offset_norm": float(future_offset_norm),
+        "heading_norm": float(heading_norm),
+        "curvature_norm": float(curvature_norm),
+        "recenter_priority": float(recenter_priority),
+        "path_span": float(path_span),
+        "steer": float(steer),
+        "metric": float(metric),
+        "x_near": float(x_near),
+        "x_far": float(x_far),
+        "x_shift": None if x_shift is None else float(x_shift),
+        "anchor_x": float(x_near),
+        "last_side": int(next_side),
+        "used_side": int(used_side),
+        "used_loose": bool(used_loose),
+        "pose_mode": pose_mode,
+    }
+
+
 class RoverSerial:
     def __init__(self, port: str, baudrate: int) -> None:
         if not hasattr(serial, "Serial"):
@@ -1320,6 +2694,7 @@ class CameraFeed:
         height: int,
         warmup_frames: int,
         mask_config: MaskConfig,
+        auto_settings: AutoSettings,
     ) -> None:
         self._cap = open_camera(
             source=source,
@@ -1330,9 +2705,14 @@ class CameraFeed:
             warmup_frames=warmup_frames,
         )
         self._mask_config = mask_config
+        self._auto_settings = auto_settings
         self._lock = threading.Lock()
         self._latest_rgb: Image.Image | None = None
+        self._latest_rgb_heatmap: Image.Image | None = None
+        self._latest_mask_input: Image.Image | None = None
+        self._latest_mask_heatmap: Image.Image | None = None
         self._latest_mask: Image.Image | None = None
+        self._latest_trajectory: Image.Image | None = None
         self._anchor_x: float | None = None
         self._last_side = 0
         self._stop = threading.Event()
@@ -1345,8 +2725,17 @@ class CameraFeed:
                 frame = read_rgb_frame(self._cap)
                 rgb = Image.fromarray(frame)
                 config = self._mask_config.get()
+                rgb_heatmap = render_mask_heatmap_preview(rgb, config)
+                working_rgb = prepare_mask_working_image(rgb, config)
+                mask_input = render_mask_input_preview(working_rgb, config)
+                mask_heatmap = render_mask_heatmap_preview(working_rgb, config)
                 mask = build_tracking_mask(rgb, config, anchor_x=self._anchor_x, prefer_side=self._last_side)
                 mask_arr = np.array(mask)
+                settings = self._auto_settings.get()
+                trajectory = render_trajectory_prediction(
+                    mask_arr,
+                    camera_center_offset=float(settings.get("camera_center_offset", AUTO_SETTINGS_DEFAULTS["camera_center_offset"])),
+                )
                 x_near, _, _, _, _ = estimate_strip_pose(mask_arr, 0.82, 0.42)
                 if x_near is not None:
                     self._anchor_x = x_near
@@ -1357,7 +2746,11 @@ class CameraFeed:
                         self._last_side = -1
                 with self._lock:
                     self._latest_rgb = rgb
+                    self._latest_rgb_heatmap = rgb_heatmap
+                    self._latest_mask_input = mask_input
+                    self._latest_mask_heatmap = mask_heatmap
                     self._latest_mask = mask
+                    self._latest_trajectory = trajectory
             except Exception:
                 time.sleep(0.1)
                 continue
@@ -1365,7 +2758,18 @@ class CameraFeed:
 
     def jpeg_bytes(self, kind: str) -> bytes:
         with self._lock:
-            image = self._latest_rgb if kind == "rgb" else self._latest_mask
+            if kind == "rgb":
+                image = self._latest_rgb
+            elif kind == "rgb_heatmap":
+                image = self._latest_rgb_heatmap
+            elif kind == "mask_input":
+                image = self._latest_mask_input
+            elif kind == "mask_heatmap":
+                image = self._latest_mask_heatmap
+            elif kind == "mask":
+                image = self._latest_mask
+            else:
+                image = self._latest_trajectory
         if image is None:
             image = Image.new("RGB", (640, 360), color="black")
         with BytesIO() as buf:
@@ -1397,6 +2801,7 @@ class AppState:
         camera_source: str,
         width: int,
         height: int,
+        auto_settings: AutoSettings,
     ) -> None:
         self.rover = rover
         self.rover_error = rover_error
@@ -1409,6 +2814,7 @@ class AppState:
         self.height = height
         self.mask_config = MaskConfig()
         self.calibration = MotionCalibration()
+        self.auto_settings = auto_settings
         self.auto_controller: AutoController | None = None
 
     def status_payload(self) -> dict[str, object]:
@@ -1455,26 +2861,30 @@ class AutoController:
         camera: CameraFeed | None,
         mask_config: MaskConfig,
         calibration: MotionCalibration,
+        auto_settings: AutoSettings,
     ) -> None:
         self._rover = rover
         self._camera = camera
         self._mask_config = mask_config
         self._calibration = calibration
+        self._auto_settings = auto_settings
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._settings = {
             "drive": 0.0,
             "min_drive": 0.0,
-            "max_drive": 0.12,
+            "max_drive": 0.06,
             "k_offset": 0.90,
-            "k_heading": 0.50,
+            "k_heading": 0.70,
+            "k_curve": 0.75,
             "turn_mix": 0.24,
             "loop_hz": 2.0,
             "center_tolerance": 0.06,
-            "min_steer": 0.10,
-            "min_wheel": 0.04,
+            "min_steer": 0.12,
+            "min_wheel": 0.05,
             "forward_floor": 0.0,
+            "curve_slowdown": 0.18,
             "motor_bias": 0.00,
             "step_up": 0.02,
             "stuck_shift_px": 10.0,
@@ -1483,6 +2893,7 @@ class AutoController:
             "search_max_turn": 0.18,
             "search_drive": 0.04,
         }
+        self._settings.update(self._auto_settings.get())
         self.last_analysis: dict[str, float | str] | None = None
         self.last_status = "idle"
         self.last_error: str | None = None
@@ -1493,12 +2904,25 @@ class AutoController:
         self._stuck_steps = 0
         self._search_steps = 0
         self._last_steer_sign = 0
+        self._smoothed_steer = 0.0
+        self._smoothed_drive = 0.0
+
+    def apply_saved_settings(self, values: dict[str, Any]) -> dict[str, float]:
+        with self._lock:
+            for key in AUTO_SETTINGS_DEFAULTS:
+                if key not in values:
+                    continue
+                try:
+                    self._settings[key] = float(values[key])
+                except Exception:
+                    continue
+            return {key: float(self._settings[key]) for key in AUTO_SETTINGS_DEFAULTS}
 
     @staticmethod
     def _decision_label(left: float, right: float, searching: bool = False) -> str:
         avg = (left + right) / 2.0
         diff = left - right
-        turn_eps = 0.03
+        turn_eps = 0.02
         move_eps = 0.03
         if searching:
             if diff > turn_eps:
@@ -1548,23 +2972,25 @@ class AutoController:
         max_drive: float,
         searching: bool = False,
     ) -> tuple[float, float, float]:
+        del left_turn_min, right_turn_min
         effective_max_drive = max(0.05, float(max_drive))
-        forward_ref = min(effective_max_drive, max(0.05, float(forward_min) + 0.015))
-        crawl = forward_ref + min(0.012 if searching else 0.008, extra_force * 0.10)
-        crawl = min(crawl, effective_max_drive)
-        min_delta = 0.025 if searching else 0.015
-        mix = float(np.clip(turn_mix, 0.0, 1.0))
-        if direction >= 0:
-            turn_floor = max(float(right_turn_min), crawl + min_delta)
-            outer = crawl + max(min_delta, (turn_floor - crawl) * mix)
-            outer += min(0.015 if searching else 0.010, extra_force * 0.12)
-            outer = min(outer, max(crawl + min_delta, effective_max_drive))
-            return float(outer), float(crawl), float(crawl)
-        turn_floor = max(float(left_turn_min), crawl + min_delta)
-        outer = crawl + max(min_delta, (turn_floor - crawl) * mix)
-        outer += min(0.015 if searching else 0.010, extra_force * 0.12)
-        outer = min(outer, max(crawl + min_delta, effective_max_drive))
-        return float(crawl), float(outer), float(crawl)
+        severity = float(
+            np.clip(
+                0.30
+                + (0.28 if searching else 0.0)
+                + float(extra_force) * (5.0 if searching else 3.5),
+                0.0,
+                1.0,
+            )
+        )
+        mix = float(np.clip(float(turn_mix) * (0.82 + 0.95 * severity), 0.22, 1.25))
+        drive = min(effective_max_drive, max(0.0, float(forward_min) + (0.008 if not searching else 0.0)))
+        drive *= max(0.0, 0.92 - 0.78 * severity)
+        if searching and severity > 0.58:
+            drive = 0.0
+        steer = 1.0 if direction >= 0 else -1.0
+        left, right = compute_left_right(steer, drive, mix)
+        return float(left), float(right), float(drive)
 
     def status_payload(self) -> dict[str, object]:
         with self._lock:
@@ -1592,6 +3018,8 @@ class AutoController:
             self._search_steps = 0
             self._last_side = 0
             self._last_steer_sign = 0
+            self._smoothed_steer = 0.0
+            self._smoothed_drive = 0.0
             if self._thread is not None and self._thread.is_alive():
                 raise RuntimeError("Auto follow is already running.")
             self._stop.clear()
@@ -1623,6 +3051,8 @@ class AutoController:
                 pass
         with self._lock:
             self.last_status = "stopped"
+            self._smoothed_steer = 0.0
+            self._smoothed_drive = 0.0
         return self.status_payload()
 
     def _run(self) -> None:
@@ -1635,29 +3065,41 @@ class AutoController:
                     self.last_status = analysis["status"]
                     self.last_error = None
             except Exception as exc:
+                previous_analysis = self.last_analysis if isinstance(self.last_analysis, dict) else None
+                grace_bottom = None
+                grace_steer = 0.0
+                grace_drive = 0.0
+                grace_active = False
+                if previous_analysis is not None:
+                    try:
+                        grace_bottom = float(previous_analysis.get("bottom_offset_norm", previous_analysis.get("offset_norm", 1.0)))
+                        grace_steer = float(previous_analysis.get("steer", 0.0))
+                        previous_drive = float(previous_analysis.get("drive", 0.0))
+                        grace_drive = max(0.024, min(0.040, previous_drive * 0.60 + 0.008))
+                        grace_active = (
+                            self._search_steps < 1
+                            and abs(grace_bottom) <= 0.16
+                            and abs(grace_steer) <= 0.55
+                        )
+                    except Exception:
+                        grace_active = False
                 if self._rover is not None:
                     try:
                         calibration = self._calibration.get()
-                        left_turn_min = max(0.0, float(calibration.get("left", 0.0)))
-                        right_turn_min = max(0.0, float(calibration.get("right", 0.0)))
                         forward_min = max(0.0, float(calibration.get("forward", 0.0)))
-                        search_turn = float(self._settings["search_turn"])
-                        search_turn += self._search_steps * float(self._settings["search_step_up"])
-                        search_turn = min(search_turn, float(self._settings["search_max_turn"]))
-                        direction = -self._last_steer_sign if self._last_steer_sign != 0 else self._last_side
-                        if direction == 0:
-                            direction = 1
                         bias = float(self._settings["motor_bias"])
-                        left, right, _search_drive = self._gentle_turn_values(
-                            direction,
-                            forward_min,
-                            left_turn_min,
-                            right_turn_min,
-                            search_turn,
-                            float(self._settings["turn_mix"]),
-                            max(float(self._settings["max_drive"]), forward_min),
-                            searching=True,
-                        )
+                        if grace_active:
+                            effective_max_drive = max(float(self._settings["max_drive"]), forward_min)
+                            grace_drive = min(effective_max_drive, grace_drive)
+                            raw_left, raw_right = compute_left_right(
+                                grace_steer,
+                                grace_drive,
+                                float(np.clip(float(self._settings["turn_mix"]) * 0.90, 0.12, 0.55)),
+                            )
+                            left, right = raw_left, raw_right
+                        else:
+                            left, right = 0.0, 0.0
+                        left, right = apply_drive_calibration(left, right, calibration)
                         left = float(np.clip(left + bias, -1.0, 1.0))
                         right = float(np.clip(right - bias, -1.0, 1.0))
                         self._rover.send(left, right)
@@ -1669,24 +3111,26 @@ class AutoController:
                 with self._lock:
                     self._search_steps += 1
                     self.last_error = str(exc)
-                    self.last_status = "waiting for line, searching"
+                    self.last_status = "line briefly lost, holding" if grace_active else "waiting for line"
                     self.last_analysis = {
-                        "status": "searching",
+                        "status": "holding" if grace_active else "waiting",
                         "decision": self._decision_label(
                             left if 'left' in locals() else 0.0,
                             right if 'right' in locals() else 0.0,
-                            searching=True,
+                            searching=False,
                         ),
-                        "decision_reason": self._decision_reason(
-                            0.0,
-                            0.0,
-                            searching=True,
-                            search_direction=direction if 'direction' in locals() else 0,
+                        "decision_reason": (
+                            f"holding previous line: bottom={grace_bottom:+.2f} steer={grace_steer:+.2f}"
+                            if grace_active
+                            else "line lost, waiting for next valid frame"
                         ),
-                        "offset_norm": 0.0,
+                        "bottom_offset_norm": float(grace_bottom if grace_bottom is not None else 0.0),
+                        "offset_norm": float(grace_bottom if grace_bottom is not None else 0.0),
                         "heading_norm": 0.0,
-                        "steer": 0.0,
-                        "drive": 0.0,
+                        "curvature_norm": 0.0,
+                        "recenter_priority": 0.0,
+                        "steer": float(grace_steer if grace_active else 0.0),
+                        "drive": float(grace_drive if grace_active else 0.0),
                         "boost_drive": 0.0,
                         "left": left if 'left' in locals() else 0.0,
                         "right": right if 'right' in locals() else 0.0,
@@ -1694,7 +3138,7 @@ class AutoController:
                         "x_shift": 0.0,
                         "stuck_steps": int(self._stuck_steps),
                         "search_steps": int(self._search_steps),
-                        "search_turn": float(search_turn if 'search_turn' in locals() else 0.0),
+                        "search_turn": 0.0,
                     }
                 time.sleep(0.25)
                 continue
@@ -1715,127 +3159,156 @@ class AutoController:
             raise RuntimeError("No camera frame yet.")
 
         config = self._mask_config.get()
-        rgb_image = Image.fromarray(frame)
-        candidate_prefs = []
-        if self._last_side != 0:
-            candidate_prefs.append((self._last_side, False))
-            candidate_prefs.append((self._last_side, True))
-            candidate_prefs.append((0, True))
-            candidate_prefs.append((-self._last_side, True))
-        else:
-            candidate_prefs.append((0, False))
-            candidate_prefs.append((0, True))
-
-        mask = None
-        x_near = x_far = None
-        pose_mode = "none"
-        used_side = 0
-        used_loose = False
-        for prefer_side, loose in candidate_prefs:
-            candidate_mask = np.array(
-                build_tracking_mask(
-                    rgb_image,
-                    config,
-                    anchor_x=self._anchor_x,
-                    prefer_side=prefer_side,
-                    loose=loose,
-                )
-            )
-            cand_near, cand_far, _row_near, _row_far, cand_mode = estimate_strip_pose(candidate_mask, 0.82, 0.42)
-            if cand_near is not None and cand_far is not None:
-                mask = candidate_mask
-                x_near = cand_near
-                x_far = cand_far
-                pose_mode = cand_mode
-                used_side = prefer_side
-                used_loose = loose
-                break
-
-        if x_near is None or x_far is None:
-            raise RuntimeError("Could not find target strip in mask.")
-        self._anchor_x = x_near
-        width = frame.shape[1]
-        if x_near > width * 0.55:
-            self._last_side = 1
-        elif x_near < width * 0.45:
-            self._last_side = -1
-
-        image_center_x = width / 2.0
-        offset_norm = (x_near - image_center_x) / (width / 2.0)
-        heading_norm = (x_far - x_near) / (width / 2.0)
-        x_shift = None
+        prev_x_near = None
         if self.last_analysis is not None and "x_near" in self.last_analysis:
-            x_shift = abs(float(x_near) - float(self.last_analysis["x_near"]))
-            if x_shift < float(self._settings["stuck_shift_px"]):
+            prev_x_near = float(self.last_analysis["x_near"])
+        analysis = analyze_tracking_frame(
+            frame,
+            config,
+            anchor_x=self._anchor_x,
+            last_side=self._last_side,
+            prev_x_near=prev_x_near,
+            camera_center_offset=float(self._settings.get("camera_center_offset", 0.0)),
+            k_offset=float(self._settings["k_offset"]),
+            k_heading=float(self._settings["k_heading"]),
+            k_curve=float(self._settings["k_curve"]),
+        )
+        self._anchor_x = float(analysis["anchor_x"])
+        self._last_side = int(analysis["last_side"])
+        bottom_offset_norm = float(analysis.get("bottom_offset_norm", analysis["offset_norm"]))
+        offset_norm = float(analysis["offset_norm"])
+        heading_norm = float(analysis["heading_norm"])
+        curvature_norm = float(analysis.get("curvature_norm", 0.0))
+        recenter_priority = float(analysis.get("recenter_priority", 0.0))
+        x_near = float(analysis["x_near"])
+        pose_mode = str(analysis["pose_mode"])
+        used_side = int(analysis["used_side"])
+        used_loose = bool(analysis["used_loose"])
+        x_shift = analysis["x_shift"]
+        if x_shift is not None:
+            if float(x_shift) < float(self._settings["stuck_shift_px"]):
                 self._stuck_steps += 1
             else:
                 self._stuck_steps = 0
 
-        steer = float(
-            np.clip(
-                float(self._settings["k_offset"]) * offset_norm +
-                float(self._settings["k_heading"]) * heading_norm,
-                -1.0,
-                1.0,
-            )
-        )
-        steer = float(np.clip(steer, -0.55, 0.55))
-        if abs(steer) > 0.04:
-            self._last_steer_sign = 1 if steer > 0 else -1
+        steer = float(analysis["steer"])
+        steer_direction_seed = steer
+        if abs(steer_direction_seed) <= 1e-6:
+            steer_direction_seed = bottom_offset_norm if abs(bottom_offset_norm) >= abs(heading_norm) else heading_norm
+        if max(abs(steer), abs(bottom_offset_norm), abs(heading_norm), abs(curvature_norm)) > 0.04 and abs(steer_direction_seed) > 1e-6:
+            self._last_steer_sign = 1 if steer_direction_seed > 0 else -1
 
-        if abs(steer) < float(self._settings["min_steer"]) and abs(offset_norm) > float(self._settings["center_tolerance"]):
-            steer = float(np.sign(steer) or np.sign(offset_norm)) * float(self._settings["min_steer"])
+        if (
+            abs(steer) < float(self._settings["min_steer"])
+            and max(abs(bottom_offset_norm), abs(heading_norm), abs(curvature_norm)) > float(self._settings["center_tolerance"]) * 0.85
+        ):
+            steer_seed = steer
+            if abs(steer_seed) <= 1e-6:
+                steer_seed = bottom_offset_norm if abs(bottom_offset_norm) > abs(heading_norm) else heading_norm
+            steer = float(np.sign(steer_seed) or 1.0) * float(self._settings["min_steer"])
 
         calibration = self._calibration.get()
         forward_min = max(0.0, float(calibration.get("forward", 0.0)))
-        left_turn_min = max(0.0, float(calibration.get("left", 0.0)))
-        right_turn_min = max(0.0, float(calibration.get("right", 0.0)))
         effective_max_drive = max(float(self._settings["max_drive"]), forward_min)
         base_forward_drive = min(effective_max_drive, max(0.05, forward_min + 0.015))
         drive_boost = self._stuck_steps * float(self._settings["step_up"])
         stuck_extra = min(0.18, drive_boost)
+        rough_ground_push = min(0.03, stuck_extra * 0.35)
         center_tol = float(self._settings["center_tolerance"])
-        heading_turn_tol = 0.08
-        turn_only = abs(offset_norm) > center_tol or abs(heading_norm) > heading_turn_tol
-
-        if turn_only:
-            drive = 0.0
-            left, right, crawl_drive = self._gentle_turn_values(
-                1 if steer >= 0 else -1,
-                forward_min,
-                left_turn_min,
-                right_turn_min,
-                stuck_extra,
-                float(self._settings["turn_mix"]),
-                effective_max_drive,
-                searching=False,
+        turn_severity = float(
+            np.clip(
+                max(
+                    abs(bottom_offset_norm) * 1.10,
+                    abs(offset_norm),
+                    abs(heading_norm) * (0.72 + 0.23 * (1.0 - recenter_priority)),
+                    abs(curvature_norm) * (0.55 + 0.55 * (1.0 - recenter_priority)),
+                ),
+                0.0,
+                1.0,
             )
-            drive = crawl_drive
+        )
+        needs_turn = (
+            abs(bottom_offset_norm) > center_tol
+            or abs(offset_norm) > center_tol * 0.90
+            or (recenter_priority < 0.30 and abs(heading_norm) > 0.08)
+            or (recenter_priority < 0.18 and abs(curvature_norm) > 0.12)
+        )
+
+        drive_target = max(base_forward_drive, float(self._settings["min_drive"]), self._base_drive)
+        if self._stuck_steps > 0:
+            drive_target = min(effective_max_drive, drive_target + rough_ground_push)
+        curve_slowdown = float(self._settings["curve_slowdown"])
+        drive_penalty = curve_slowdown * (0.55 * turn_severity + 0.45 * abs(curvature_norm))
+        if needs_turn:
+            drive = max(0.0, min(effective_max_drive, drive_target - drive_penalty))
+            if recenter_priority > 0.45:
+                drive = min(drive, max(0.0, base_forward_drive - 0.020))
+            elif turn_severity > 0.45:
+                drive = min(drive, max(0.0, base_forward_drive - 0.015))
+            if turn_severity > 0.82 and max(abs(bottom_offset_norm), abs(heading_norm), abs(curvature_norm)) > center_tol:
+                drive = min(drive, 0.02)
+            if self._stuck_steps > 0:
+                drive = max(drive, min(effective_max_drive, 0.025 + rough_ground_push * 0.45))
             decision_reason = (
-                f"re-centering first: near line={'right' if offset_norm > 0 else 'left'}, "
-                f"curve={'right' if heading_norm > 0 else 'left' if heading_norm < 0 else 'straight'}"
+                f"trajectory bottom={bottom_offset_norm:+.2f} gap={offset_norm:+.2f} "
+                f"heading={heading_norm:+.2f} curve={curvature_norm:+.2f} recenter={recenter_priority:.2f}"
             )
         else:
-            drive_target = max(base_forward_drive, float(self._settings["min_drive"]), self._base_drive)
-            drive = min(drive_target, effective_max_drive)
-            if self._stuck_steps > 0:
-                drive = min(effective_max_drive, drive + min(0.020, stuck_extra * 0.12))
-            if abs(offset_norm) <= center_tol:
-                drive = min(drive + 0.004, effective_max_drive)
+            drive = min(drive_target + (0.004 if abs(offset_norm) <= center_tol else 0.0), effective_max_drive)
+            decision_reason = "trajectory centered enough, moving forward"
 
-            left = float(drive)
-            right = float(drive)
+        steer_step = 0.12
+        drive_step_up = 0.008
+        drive_step_down = 0.022
+        steer = float(
+            self._smoothed_steer
+            + np.clip(steer - self._smoothed_steer, -steer_step, steer_step)
+        )
+        if drive >= self._smoothed_drive:
+            drive = float(self._smoothed_drive + min(drive - self._smoothed_drive, drive_step_up))
+        else:
+            drive = float(self._smoothed_drive - min(self._smoothed_drive - drive, drive_step_down))
+        self._smoothed_steer = steer
+        self._smoothed_drive = drive
+
+        mix_used = float(
+            np.clip(
+                float(self._settings["turn_mix"]) * (0.92 + 1.18 * turn_severity) + min(0.15, stuck_extra * 0.8),
+                0.12,
+                1.25,
+            )
+        )
+        raw_left, raw_right = compute_left_right(steer, drive, mix_used)
+        if needs_turn and turn_severity > 0.92 and raw_left * raw_right > 0.0:
+            pivot_drive = 0.04 if turn_severity > 0.97 else min(max(drive, 0.045), 0.06)
+            raw_left, raw_right = compute_left_right(1.0 if steer >= 0 else -1.0, pivot_drive, max(0.50, mix_used))
+
+        left, right = apply_drive_calibration(raw_left, raw_right, calibration)
+        if needs_turn:
+            turn_direction_boost = 1.25
+            if steer > 1e-6:
+                if left > 0.0:
+                    left = float(min(1.0, left * turn_direction_boost))
+                if right < 0.0:
+                    right = float(max(-1.0, right * turn_direction_boost))
+            elif steer < -1e-6:
+                if right > 0.0:
+                    right = float(min(1.0, right * turn_direction_boost))
+                if left < 0.0:
+                    left = float(max(-1.0, left * turn_direction_boost))
+        if not needs_turn and left > 0.0 and right > 0.0:
             forward_floor = max(base_forward_drive, min(effective_max_drive, self._base_forward_floor))
             if self._stuck_steps > 0:
-                forward_floor = min(effective_max_drive, max(forward_floor, base_forward_drive + min(0.010, stuck_extra * 0.10)))
+                forward_floor = min(effective_max_drive, max(forward_floor, base_forward_drive + min(0.015, rough_ground_push * 0.55)))
             left = max(left, forward_floor)
             right = max(right, forward_floor)
-            decision_reason = "line centered enough, moving forward"
 
         motor_bias = float(self._settings["motor_bias"])
         left = float(np.clip(left + motor_bias, -1.0, 1.0))
         right = float(np.clip(right - motor_bias, -1.0, 1.0))
         min_wheel = float(self._settings["min_wheel"])
+        if self._stuck_steps > 0:
+            min_wheel = min(0.08, min_wheel + min(0.02, rough_ground_push * 0.45))
         if abs(left) < min_wheel and abs(left) > 1e-6:
             left = float(np.sign(left) * min_wheel)
         if abs(right) < min_wheel and abs(right) > 1e-6:
@@ -1845,11 +3318,15 @@ class AutoController:
             "status": "following line" if pose_mode == "row" else f"following line ({pose_mode})",
             "decision": self._decision_label(left, right),
             "decision_reason": decision_reason,
+            "bottom_offset_norm": float(bottom_offset_norm),
             "offset_norm": float(offset_norm),
             "heading_norm": float(heading_norm),
+            "curvature_norm": float(curvature_norm),
+            "recenter_priority": float(recenter_priority),
             "steer": float(steer),
             "drive": float(drive),
             "boost_drive": float(stuck_extra),
+            "mix_used": float(mix_used),
             "left": float(left),
             "right": float(right),
             "x_near": float(x_near),
@@ -1871,6 +3348,7 @@ def create_app(
     warmup_frames: int,
 ) -> Flask:
     mask_config = MaskConfig()
+    auto_settings = AutoSettings()
     rover = None
     rover_error = None
     try:
@@ -1881,7 +3359,7 @@ def create_app(
     camera = None
     camera_error = None
     try:
-        camera = CameraFeed(camera_source, sensor_id, device_index, width, height, warmup_frames, mask_config)
+        camera = CameraFeed(camera_source, sensor_id, device_index, width, height, warmup_frames, mask_config, auto_settings)
     except Exception as exc:
         camera_error = str(exc)
 
@@ -1895,9 +3373,10 @@ def create_app(
         camera_source=camera_source,
         width=width,
         height=height,
+        auto_settings=auto_settings,
     )
     state.mask_config = mask_config
-    state.auto_controller = AutoController(rover, camera, mask_config, state.calibration)
+    state.auto_controller = AutoController(rover, camera, mask_config, state.calibration, state.auto_settings)
     app = Flask(__name__)
     atexit.register(state.close)
 
@@ -1908,6 +3387,31 @@ def create_app(
     @app.get("/api/status")
     def api_status():
         return jsonify(state.status_payload())
+
+    @app.post("/api/analyze")
+    def api_analyze():
+        if state.camera is None:
+            return jsonify({"status": "camera unavailable", "error": state.camera_error}), 503
+        frame = state.camera.latest_rgb_array()
+        if frame is None:
+            return jsonify({"status": "no frame yet"}), 503
+        data = request.get_json(silent=True) or {}
+        saved_settings = state.auto_settings.get()
+        try:
+                analysis = analyze_tracking_frame(
+                    frame,
+                    state.mask_config.get(),
+                    anchor_x=None if data.get("anchor_x") is None else float(data.get("anchor_x")),
+                    last_side=int(data.get("last_side", 0)),
+                    prev_x_near=None if data.get("prev_x_near") is None else float(data.get("prev_x_near")),
+                    camera_center_offset=float(data.get("camera_center_offset", saved_settings.get("camera_center_offset", AUTO_SETTINGS_DEFAULTS["camera_center_offset"]))),
+                    k_offset=float(data.get("k_offset", saved_settings.get("k_offset", AUTO_SETTINGS_DEFAULTS["k_offset"]))),
+                    k_heading=float(data.get("k_heading", saved_settings.get("k_heading", AUTO_SETTINGS_DEFAULTS["k_heading"]))),
+                    k_curve=float(data.get("k_curve", saved_settings.get("k_curve", AUTO_SETTINGS_DEFAULTS["k_curve"]))),
+                )
+        except Exception as exc:
+            return jsonify({"status": f"error: {exc}"}), 400
+        return jsonify(analysis)
 
     @app.post("/api/drive")
     def api_drive():
@@ -1959,6 +3463,28 @@ def create_app(
             "payload": payload,
         })
 
+    @app.post("/api/pulse_raw")
+    def api_pulse_raw():
+        if state.rover is None:
+            return jsonify({"status": "serial unavailable", "error": state.rover_error}), 503
+        data = request.get_json(force=True)
+        requested_left = float(data.get("left", 0.0))
+        requested_right = float(data.get("right", 0.0))
+        duration_s = float(data.get("duration_s", 0.35))
+        calibration = state.calibration.get()
+        left, right = apply_drive_calibration(requested_left, requested_right, calibration)
+        payload = state.rover.pulse(left, right, duration_s)
+        return jsonify({
+            "status": "raw pulse sent",
+            "requested_left": requested_left,
+            "requested_right": requested_right,
+            "left": left,
+            "right": right,
+            "calibration": calibration,
+            "duration_s": duration_s,
+            "payload": payload,
+        })
+
     @app.post("/api/stop")
     def api_stop():
         if state.rover is None:
@@ -1973,24 +3499,29 @@ def create_app(
         if state.auto_controller is None:
             return jsonify({"status": "auto unavailable"}), 503
         data = request.get_json(force=True)
-        base_drive = float(data.get("drive", 0.0))
+        saved = state.auto_settings.update(data)
+        state.auto_controller.apply_saved_settings(saved)
+        base_drive = float(saved.get("drive", 0.0))
         try:
             payload = state.auto_controller.start(
                 {
                     "drive": base_drive,
                     "min_drive": max(0.0, base_drive - 0.01),
-                    "max_drive": float(data.get("max_drive", 0.12)),
-                    "k_offset": float(data.get("k_offset", 0.90)),
-                    "k_heading": float(data.get("k_heading", 0.50)),
-                    "turn_mix": float(data.get("turn_mix", 0.24)),
-                    "loop_hz": float(data.get("loop_hz", 2.0)),
-                    "center_tolerance": float(data.get("center_tolerance", 0.06)),
-                    "min_steer": float(data.get("min_steer", 0.10)),
-                    "forward_floor": float(data.get("forward_floor", 0.0)),
-                    "motor_bias": float(data.get("motor_bias", 0.00)),
-                    "step_up": float(data.get("step_up", 0.02)),
-                    "stuck_shift_px": float(data.get("stuck_shift_px", 10.0)),
-                    "min_wheel": max(0.03, base_drive - 0.005),
+                    "max_drive": float(saved.get("max_drive", AUTO_SETTINGS_DEFAULTS["max_drive"])),
+                    "camera_center_offset": float(saved.get("camera_center_offset", AUTO_SETTINGS_DEFAULTS["camera_center_offset"])),
+                    "k_offset": float(saved.get("k_offset", AUTO_SETTINGS_DEFAULTS["k_offset"])),
+                    "k_heading": float(saved.get("k_heading", AUTO_SETTINGS_DEFAULTS["k_heading"])),
+                    "k_curve": float(saved.get("k_curve", AUTO_SETTINGS_DEFAULTS["k_curve"])),
+                    "turn_mix": float(saved.get("turn_mix", AUTO_SETTINGS_DEFAULTS["turn_mix"])),
+                    "loop_hz": float(saved.get("loop_hz", AUTO_SETTINGS_DEFAULTS["loop_hz"])),
+                    "center_tolerance": float(saved.get("center_tolerance", AUTO_SETTINGS_DEFAULTS["center_tolerance"])),
+                    "min_steer": float(saved.get("min_steer", AUTO_SETTINGS_DEFAULTS["min_steer"])),
+                    "forward_floor": float(saved.get("forward_floor", AUTO_SETTINGS_DEFAULTS["forward_floor"])),
+                    "curve_slowdown": float(saved.get("curve_slowdown", AUTO_SETTINGS_DEFAULTS["curve_slowdown"])),
+                    "motor_bias": float(saved.get("motor_bias", AUTO_SETTINGS_DEFAULTS["motor_bias"])),
+                    "step_up": float(saved.get("step_up", AUTO_SETTINGS_DEFAULTS["step_up"])),
+                    "stuck_shift_px": float(saved.get("stuck_shift_px", AUTO_SETTINGS_DEFAULTS["stuck_shift_px"])),
+                    "min_wheel": max(0.05, base_drive - 0.005),
                 }
             )
         except Exception as exc:
@@ -2003,6 +3534,24 @@ def create_app(
             return jsonify({"status": "auto unavailable"}), 503
         payload = state.auto_controller.stop()
         return jsonify({"status": "auto stopped", "auto": payload})
+
+    @app.get("/api/auto/settings")
+    def api_auto_settings_get():
+        return jsonify(state.auto_settings.get())
+
+    @app.post("/api/auto/settings")
+    def api_auto_settings_set():
+        updated = state.auto_settings.update(request.get_json(force=True))
+        if state.auto_controller is not None:
+            state.auto_controller.apply_saved_settings(updated)
+        return jsonify(updated)
+
+    @app.post("/api/auto/settings/reset")
+    def api_auto_settings_reset():
+        updated = state.auto_settings.reset()
+        if state.auto_controller is not None:
+            state.auto_controller.apply_saved_settings(updated)
+        return jsonify(updated)
 
     @app.get("/api/mask/config")
     def api_mask_config():
@@ -2033,6 +3582,7 @@ def create_app(
             {
                 "detector_mode": str(data.get("detector_mode", state.mask_config.get()["detector_mode"])),
                 "crop_top_ratio": float(data.get("crop_top_ratio", state.mask_config.get()["crop_top_ratio"])),
+                "processing_scale": float(data.get("processing_scale", state.mask_config.get().get("processing_scale", 1.0))),
                 "color_distance_threshold": float(data.get("color_distance_threshold", state.mask_config.get()["color_distance_threshold"])),
                 "color_distance_margin": float(data.get("color_distance_margin", state.mask_config.get()["color_distance_margin"])),
                 "h_min": int(data.get("h_min", state.mask_config.get()["h_min"])),
@@ -2118,11 +3668,35 @@ def create_app(
             return Response(_placeholder_jpeg("Camera offline"), mimetype="image/jpeg")
         return Response(state.camera.jpeg_bytes("rgb"), mimetype="image/jpeg")
 
+    @app.get("/camera/rgb_heatmap.jpg")
+    def camera_rgb_heatmap():
+        if state.camera is None:
+            return Response(_placeholder_jpeg("RGB heatmap unavailable"), mimetype="image/jpeg")
+        return Response(state.camera.jpeg_bytes("rgb_heatmap"), mimetype="image/jpeg")
+
     @app.get("/camera/mask.jpg")
     def camera_mask():
         if state.camera is None:
             return Response(_placeholder_jpeg("Mask unavailable"), mimetype="image/jpeg")
         return Response(state.camera.jpeg_bytes("mask"), mimetype="image/jpeg")
+
+    @app.get("/camera/mask_input.jpg")
+    def camera_mask_input():
+        if state.camera is None:
+            return Response(_placeholder_jpeg("Mask input unavailable"), mimetype="image/jpeg")
+        return Response(state.camera.jpeg_bytes("mask_input"), mimetype="image/jpeg")
+
+    @app.get("/camera/mask_heatmap.jpg")
+    def camera_mask_heatmap():
+        if state.camera is None:
+            return Response(_placeholder_jpeg("Mask heatmap unavailable"), mimetype="image/jpeg")
+        return Response(state.camera.jpeg_bytes("mask_heatmap"), mimetype="image/jpeg")
+
+    @app.get("/camera/trajectory.jpg")
+    def camera_trajectory():
+        if state.camera is None:
+            return Response(_placeholder_jpeg("Trajectory unavailable"), mimetype="image/jpeg")
+        return Response(state.camera.jpeg_bytes("trajectory"), mimetype="image/jpeg")
 
     @app.teardown_appcontext
     def _close(_exc):
@@ -2228,7 +3802,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--http-port", type=int, default=8765)
-    parser.add_argument("--camera-source", default="usb", choices=["usb", "csi"])
+    parser.add_argument("--camera-source", default="csi", choices=["usb", "csi"])
     parser.add_argument("--sensor-id", type=int, default=0)
     parser.add_argument("--device-index", type=int, default=0)
     parser.add_argument("--width", type=int, default=1280)
