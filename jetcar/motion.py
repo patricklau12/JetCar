@@ -9,10 +9,10 @@ import threading
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CALIBRATION_PATH = PROJECT_ROOT / ".teleop_calibration.json"
 CALIBRATION_DEFAULTS = {
-    "forward": 0.08,
+    "forward": 0.09,
     "back": 0.08,
-    "left": 0.28,
-    "right": 0.29,
+    "left": 0.22,
+    "right": 0.22,
 }
 
 
