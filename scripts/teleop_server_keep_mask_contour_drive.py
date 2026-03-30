@@ -3728,29 +3728,71 @@ class AppState:
             self.auto_controller.stop()
 
 
+
+
+def analyze_detector_contour(
+    frame: np.ndarray,
+    config: dict[str, int | float | str],
+    camera_center_offset: float = 0.0,
+) -> dict[str, float | np.ndarray]:
+    rgb_image = Image.fromarray(frame)
+    region_mask = np.array(build_detector_region_mask(rgb_image, config, anchor_x=None, prefer_side=0, loose=True))
+    region_mask = keep_primary_path_component(region_mask, anchor_x=None, prefer_side=0, loose=True)
+    region_mask = prune_mask_row_speckles(region_mask, min_run=max(4, int(config.get("morph_kernel", 7)) // 2 + 2))
+    binary = (region_mask > 0).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        raise RuntimeError("no contour in detector region")
+
+    contour = max(contours, key=cv2.contourArea)
+    area = float(cv2.contourArea(contour))
+    min_area = max(120.0, region_mask.size * 0.0010)
+    if area < min_area:
+        raise RuntimeError(f"contour too small: {area:.1f}")
+
+    m = cv2.moments(contour)
+    if abs(m.get("m00", 0.0)) < 1e-6:
+        raise RuntimeError("invalid contour moment")
+
+    h, w = region_mask.shape[:2]
+    cx = float(m["m10"] / m["m00"])
+    center_offset = float(np.clip(camera_center_offset, -0.5, 0.5))
+    image_center_x = (w / 2.0) + center_offset * (w / 2.0)
+    offset_norm = float(np.clip((cx - image_center_x) / max(w / 2.0, 1.0), -1.0, 1.0))
+
+    vx, vy, x0, y0 = cv2.fitLine(contour, cv2.DIST_L2, 0, 0.01, 0.01)
+    vx = float(vx)
+    vy = float(vy)
+    x0 = float(x0)
+    y0 = float(y0)
+    if abs(vy) < 1e-6:
+        raise RuntimeError("degenerate contour line")
+
+    y_bottom = float(h - 1)
+    y_top = float(max(0, int(h * 0.35)))
+    x_bottom = float(np.clip(x0 + ((y_bottom - y0) * vx / vy), 0.0, w - 1.0))
+    x_top = float(np.clip(x0 + ((y_top - y0) * vx / vy), 0.0, w - 1.0))
+    heading_norm = float(np.clip((x_top - x_bottom) / max(w / 2.0, 1.0), -1.0, 1.0))
+    angle_deg = float(np.degrees(np.arctan2((x_top - x_bottom), max(1.0, (y_bottom - y_top)))))
+
+    bbox_x, bbox_y, bbox_w, bbox_h = cv2.boundingRect(contour)
+    return {
+        "region_mask": region_mask,
+        "offset_norm": offset_norm,
+        "heading_norm": heading_norm,
+        "angle_deg": angle_deg,
+        "area": area,
+        "cx": cx,
+        "x_bottom": x_bottom,
+        "x_top": x_top,
+        "bbox_x": float(bbox_x),
+        "bbox_y": float(bbox_y),
+        "bbox_w": float(bbox_w),
+        "bbox_h": float(bbox_h),
+    }
+
+
 class AutoController:
-    """Simplified auto follower that keeps the existing mask / panel stack.
-
-    Workflow:
-    - GO_STRAIGHT while the line stays within a wide tolerance.
-    - If the offset / heading exceeds the tolerance, do a fixed in-place rotate
-      episode using the empirically tested raw pair (+0.40 / -0.10).
-    - After every rotate episode, do a short forward nudge to refresh the view.
-    - If the mask flickers or the line is briefly not detected, do NOT search.
-      Instead, finish the current rotate / nudge episode if one is already
-      underway, otherwise hold still and wait for the mask to recover.
-
-    The web panel, mask generation, previews, and APIs stay unchanged. Only the
-    drive / decision logic is simplified here.
-    """
-
-    ROTATE_OUTER = 0.40
-    ROTATE_INNER = -0.10
-    ROTATE_SECONDS = 0.50
-    NUDGE_SECONDS = 0.18
-    SEARCH_ROTATE_SECONDS = 0.35
-    SEARCH_NUDGE_SECONDS = 0.14
-
     def __init__(
         self,
         rover: RoverSerial | None,
@@ -3770,7 +3812,7 @@ class AutoController:
         self._stop = threading.Event()
         self._settings = {
             "drive": 0.180,
-            "min_drive": 0.120,
+            "min_drive": 0.090,
             "max_drive": 0.240,
             "k_offset": 0.90,
             "k_heading": 0.70,
@@ -3785,30 +3827,26 @@ class AutoController:
             "motor_bias": 0.00,
             "step_up": 0.02,
             "stuck_shift_px": 10.0,
-            "search_turn": 0.18,
-            "search_step_up": 0.015,
-            "search_max_turn": 0.30,
-            "search_drive": 0.00,
         }
         self._settings.update(self._auto_settings.get())
         self.last_analysis: dict[str, float | str] | None = None
         self.last_status = "idle"
         self.last_error: str | None = None
-        self._anchor_x: float | None = None
-        self._last_side = 0
-        self._last_steer_sign = 0
-        self._stuck_steps = 0
-        self._search_steps = 0
         self._target_left = 0.0
         self._target_right = 0.0
         self._current_left = 0.0
         self._current_right = 0.0
-        self._mode = "idle"
-        self._mode_deadline = 0.0
-        self._mode_turn_dir = 1
+        self._last_send = (None, None)
         self._last_left_cmd = 0.0
         self._last_right_cmd = 0.0
-        self._last_send = (None, None)
+        self._mode = "idle"
+        self._mode_until = 0.0
+        self._rotate_dir = 1
+        self._rotate_left = 0.40
+        self._rotate_right = -0.10
+        self._rotate_duration_s = 0.50
+        self._nudge_duration_s = 0.18
+        self._nudge_drive = 0.14
 
     def apply_saved_settings(self, values: dict[str, Any]) -> dict[str, float]:
         with self._lock:
@@ -3819,9 +3857,9 @@ class AutoController:
                     self._settings[key] = float(values[key])
                 except Exception:
                     continue
-            self._settings["drive"] = max(self._settings["drive"], 0.16)
-            self._settings["max_drive"] = max(self._settings["max_drive"], self._settings["drive"], 0.22)
-            self._settings["forward_floor"] = max(self._settings["forward_floor"], 0.14)
+            self._settings["drive"] = max(self._settings.get("drive", 0.18), 0.16)
+            self._settings["max_drive"] = max(self._settings.get("max_drive", 0.24), self._settings["drive"], 0.22)
+            self._settings["forward_floor"] = max(self._settings.get("forward_floor", 0.16), 0.14)
             return {key: float(self._settings[key]) for key in AUTO_SETTINGS_DEFAULTS}
 
     @staticmethod
@@ -3863,14 +3901,11 @@ class AutoController:
                 "last_status": self.last_status,
                 "last_error": self.last_error,
                 "last_analysis": self.last_analysis,
-                "stuck_steps": self._stuck_steps,
-                "search_steps": self._search_steps,
                 "target_left": self._target_left,
                 "target_right": self._target_right,
                 "current_left": self._current_left,
                 "current_right": self._current_right,
                 "control_mode": self._mode,
-                "mode_deadline": self._mode_deadline,
             }
 
     def start(self, settings: dict[str, float]) -> dict[str, object]:
@@ -3880,24 +3915,19 @@ class AutoController:
             raise RuntimeError("Camera is unavailable.")
         with self._lock:
             self._settings.update(settings)
-            self._settings["drive"] = max(float(self._settings.get("drive", 0.0)), 0.16)
-            self._settings["max_drive"] = max(float(self._settings.get("max_drive", 0.0)), float(self._settings["drive"]), 0.22)
-            self._settings["forward_floor"] = max(float(self._settings.get("forward_floor", 0.0)), 0.14)
-            self._stuck_steps = 0
-            self._search_steps = 0
-            self._last_side = 0
-            self._last_steer_sign = 0
-            self._anchor_x = None
+            self._settings["drive"] = max(float(self._settings.get("drive", 0.18)), 0.16)
+            self._settings["max_drive"] = max(float(self._settings.get("max_drive", 0.24)), float(self._settings["drive"]), 0.22)
+            self._settings["forward_floor"] = max(float(self._settings.get("forward_floor", 0.16)), 0.14)
             self._target_left = 0.0
             self._target_right = 0.0
             self._current_left = 0.0
             self._current_right = 0.0
-            self._mode = "go_straight"
-            self._mode_deadline = 0.0
-            self._mode_turn_dir = 1
+            self._last_send = (None, None)
             self._last_left_cmd = 0.0
             self._last_right_cmd = 0.0
-            self._last_send = (None, None)
+            self._mode = "idle"
+            self._mode_until = 0.0
+            self._rotate_dir = 1
             if self._thread is not None and self._thread.is_alive():
                 raise RuntimeError("Auto follow is already running.")
             self._stop.clear()
@@ -3932,7 +3962,7 @@ class AutoController:
             self._current_left = 0.0
             self._current_right = 0.0
             self._mode = "idle"
-            self._mode_deadline = 0.0
+            self._mode_until = 0.0
             self._last_send = (None, None)
         return self.status_payload()
 
@@ -3944,10 +3974,7 @@ class AutoController:
 
     @staticmethod
     def _move_towards(current: float, target: float) -> float:
-        if abs(target) > abs(current):
-            step = AUTO_RAMP_UP_PER_TICK
-        else:
-            step = AUTO_RAMP_DOWN_PER_TICK
+        step = AUTO_RAMP_UP_PER_TICK if abs(target) > abs(current) else AUTO_RAMP_DOWN_PER_TICK
         if target > current:
             return min(target, current + step)
         return max(target, current - step)
@@ -4006,253 +4033,218 @@ class AutoController:
         left, right = self._apply_bias(left, right)
         return float(np.clip(left, -0.50, 0.50)), float(np.clip(right, -0.50, 0.50))
 
-    def _fixed_rotate_pair(self, direction: int) -> tuple[float, float]:
+    def _rotate_pair(self, direction: int) -> tuple[float, float]:
         if direction >= 0:
-            left, right = self.ROTATE_OUTER, self.ROTATE_INNER
+            left, right = self._rotate_left, self._rotate_right
         else:
-            left, right = self.ROTATE_INNER, self.ROTATE_OUTER
+            left, right = self._rotate_right, self._rotate_left
         left, right = self._apply_bias(left, right)
         return float(np.clip(left, -0.50, 0.50)), float(np.clip(right, -0.50, 0.50))
 
-    @staticmethod
-    def _turn_dir_from_analysis(analysis: dict[str, float | str]) -> int:
-        future = float(analysis.get("future_offset_norm", 0.0))
-        heading = float(analysis.get("heading_norm", 0.0))
-        bottom = float(analysis.get("bottom_offset_norm", analysis.get("offset_norm", 0.0)))
-        source = future if abs(future) >= 0.05 else heading if abs(heading) >= 0.04 else bottom
-        return 1 if source >= 0.0 else -1
-
-    def _start_mode(self, mode: str, duration_s: float, turn_dir: int | None = None) -> None:
-        now = time.monotonic()
-        with self._lock:
-            self._mode = mode
-            self._mode_deadline = now + max(0.01, float(duration_s))
-            if turn_dir is not None:
-                self._mode_turn_dir = 1 if turn_dir >= 0 else -1
-                self._last_steer_sign = self._mode_turn_dir
-
-    def _current_mode(self) -> tuple[str, float, int]:
-        with self._lock:
-            return self._mode, self._mode_deadline, self._mode_turn_dir
-
-    def _build_go_straight(self, analysis: dict[str, float | str]) -> dict[str, float | str]:
-        drive_setting = max(float(self._settings.get("drive", 0.18)), 0.16)
-        max_drive = max(float(self._settings.get("max_drive", 0.24)), drive_setting)
-        forward_floor = max(float(self._settings.get("forward_floor", 0.16)), 0.14)
-        drive = min(max_drive, max(drive_setting, forward_floor, 0.18))
-        left, right = self._forward_pair(drive)
-        self._set_target(left, right, mode="go_straight")
-        center_error = float(np.clip(analysis.get("bottom_offset_norm", analysis.get("offset_norm", 0.0)), -1.0, 1.0))
-        out = dict(analysis)
-        out.update({
-            "status": "following line (go_straight)",
-            "decision": self._decision_label(left, right),
-            "decision_reason": f"go straight: within tolerance, center={center_error:+.3f}",
-            "steer": 0.0,
-            "drive": float(drive),
-            "left": float(left),
-            "right": float(right),
-            "mix_used": 0.0,
-            "stuck_steps": int(self._stuck_steps),
-            "search_steps": int(self._search_steps),
-            "search_turn": 0.0,
-            "control_mode": "go_straight",
-            "control_phase": "steady forward",
-        })
-        return out
-
-    def _build_rotate(self, analysis: dict[str, float | str], turn_dir: int, mode_name: str) -> dict[str, float | str]:
-        left, right = self._fixed_rotate_pair(turn_dir)
-        self._set_target(left, right, mode=mode_name)
-        center_error = float(np.clip(analysis.get("bottom_offset_norm", analysis.get("offset_norm", 0.0)), -1.0, 1.0))
-        heading = float(analysis.get("heading_norm", 0.0))
-        out = dict(analysis)
-        out.update({
-            "status": f"following line ({mode_name})",
-            "decision": self._decision_label(left, right),
-            "decision_reason": f"rotate only: center={center_error:+.3f} heading={heading:+.3f}",
-            "steer": float(turn_dir),
-            "drive": 0.0,
-            "left": float(left),
-            "right": float(right),
-            "mix_used": 0.0,
-            "stuck_steps": int(self._stuck_steps),
-            "search_steps": int(self._search_steps),
-            "search_turn": 0.0,
-            "control_mode": mode_name,
-            "control_phase": "fixed rotate",
-        })
-        return out
-
-    def _build_nudge(self, analysis: dict[str, float | str], mode_name: str) -> dict[str, float | str]:
-        drive_setting = max(float(self._settings.get("drive", 0.18)), 0.16)
-        forward_floor = max(float(self._settings.get("forward_floor", 0.16)), 0.14)
-        max_drive = max(float(self._settings.get("max_drive", 0.24)), drive_setting)
-        # Short refresh move after rotate, intentionally weaker than steady cruise.
-        drive = min(max_drive, max(0.12, forward_floor * 0.85, drive_setting * 0.80))
-        left, right = self._forward_pair(drive)
-        self._set_target(left, right, mode=mode_name)
-        out = dict(analysis)
-        out.update({
-            "status": f"following line ({mode_name})",
-            "decision": self._decision_label(left, right),
-            "decision_reason": f"short forward refresh after rotate, drive={drive:.2f}",
-            "steer": 0.0,
-            "drive": float(drive),
-            "left": float(left),
-            "right": float(right),
-            "mix_used": 0.0,
-            "stuck_steps": int(self._stuck_steps),
-            "search_steps": int(self._search_steps),
-            "search_turn": 0.0,
-            "control_mode": mode_name,
-            "control_phase": "post-rotate nudge",
-        })
-        return out
-
-    def _build_search(self, mode_name: str, reason: str) -> dict[str, float | str]:
-        turn_dir = self._last_steer_sign or self._last_side or 1
-        if mode_name == "search_rotate":
-            left, right = self._fixed_rotate_pair(turn_dir)
-            drive = 0.0
-            searching = True
-            phase = "search rotate"
-        else:
-            drive = 0.10
-            left, right = self._forward_pair(drive)
-            searching = False
-            phase = "search nudge"
-        self._set_target(left, right, mode=mode_name)
+    def _continue_episode(self, contour_info: dict[str, float] | None, reason: str) -> dict[str, float | str]:
+        left = float(self._target_left)
+        right = float(self._target_right)
+        offset = float(contour_info.get("offset_norm", 0.0)) if contour_info else 0.0
+        heading = float(contour_info.get("heading_norm", 0.0)) if contour_info else 0.0
+        angle_deg = float(contour_info.get("angle_deg", 0.0)) if contour_info else 0.0
         return {
-            "status": "searching for line",
-            "decision": self._decision_label(left, right, searching=searching),
+            "status": f"following line ({self._mode})",
+            "decision": self._decision_label(left, right),
             "decision_reason": reason,
-            "bottom_offset_norm": 0.0,
-            "offset_norm": 0.0,
-            "heading_norm": 0.0,
+            "bottom_offset_norm": offset,
+            "offset_norm": offset,
+            "mid_offset_norm": offset,
+            "far_offset_norm": float(np.clip(offset + 0.5 * heading, -1.0, 1.0)),
+            "future_offset_norm": float(np.clip(offset + heading, -1.0, 1.0)),
+            "heading_norm": heading,
             "curvature_norm": 0.0,
-            "recenter_priority": 1.0,
-            "steer": float(turn_dir if mode_name == "search_rotate" else 0.0),
-            "drive": float(drive),
-            "left": float(left),
-            "right": float(right),
-            "x_near": self._anchor_x if self._anchor_x is not None else 0.0,
-            "x_far": self._anchor_x if self._anchor_x is not None else 0.0,
-            "x_shift": 0.0,
-            "future_offset_norm": 0.0,
+            "recenter_priority": 0.0,
             "path_span": 0.0,
-            "mix_used": 0.0,
-            "stuck_steps": int(self._stuck_steps),
-            "search_steps": int(self._search_steps),
-            "search_turn": float(self.ROTATE_OUTER),
-            "control_mode": mode_name,
-            "control_phase": phase,
-            "anchor_x": self._anchor_x if self._anchor_x is not None else 0.0,
-            "last_side": int(self._last_side),
+            "angle_deg": angle_deg,
+            "steer": float(self._rotate_dir if self._mode == "rotate_to_align" else 0.0),
+            "drive": float((left + right) * 0.5),
+            "left": left,
+            "right": right,
+            "x_near": float(contour_info.get("x_bottom", 0.0)) if contour_info else 0.0,
+            "x_far": float(contour_info.get("x_top", 0.0)) if contour_info else 0.0,
+            "x_shift": 0.0,
+            "anchor_x": float(contour_info.get("cx", 0.0)) if contour_info else 0.0,
+            "last_side": int(self._rotate_dir),
+            "used_side": int(self._rotate_dir),
+            "used_loose": False,
+            "used_anchor_free": True,
+            "pose_mode": "contour",
+            "control_mode": self._mode,
+            "control_phase": self._mode,
+            "search_steps": 0,
+            "stuck_steps": 0,
+            "contour_area": float(contour_info.get("area", 0.0)) if contour_info else 0.0,
         }
-
-    def _select_target(self, analysis: dict[str, float | str]) -> dict[str, float | str]:
-        now = time.monotonic()
-        mode, deadline, turn_dir = self._current_mode()
-        center_error = float(np.clip(analysis.get("bottom_offset_norm", analysis.get("offset_norm", 0.0)), -1.0, 1.0))
-        heading = float(analysis.get("heading_norm", 0.0))
-        future = float(analysis.get("future_offset_norm", 0.0))
-        x_shift = analysis.get("x_shift")
-        if x_shift is not None:
-            if float(x_shift) < float(self._settings.get("stuck_shift_px", 10.0)):
-                self._stuck_steps += 1
-            else:
-                self._stuck_steps = 0
-        turn_dir = self._turn_dir_from_analysis(analysis)
-        self._last_side = 1 if center_error >= 0.0 else -1
-        self._last_steer_sign = turn_dir
-
-        enter_thresh = max(float(self._settings.get("center_tolerance", 0.10)), 0.10)
-        heading_enter = max(0.16, float(self._settings.get("min_steer", 0.10)) * 1.5)
-        # Wide straight acceptance: approximately +/- 30 degrees equivalent.
-        needs_rotate = abs(center_error) > enter_thresh or abs(heading) > heading_enter or abs(future) > 0.22
-
-        if mode == "rotate_to_align":
-            if now < deadline:
-                return self._build_rotate(analysis, turn_dir, "rotate_to_align")
-            self._start_mode("forward_nudge", self.NUDGE_SECONDS)
-            return self._build_nudge(analysis, "forward_nudge")
-
-        if mode == "forward_nudge":
-            if now < deadline:
-                return self._build_nudge(analysis, "forward_nudge")
-            self._start_mode("go_straight", 0.0)
-            return self._build_go_straight(analysis)
-
-        # Fresh decision from go_straight / idle / recovered hold.
-        if needs_rotate:
-            self._start_mode("rotate_to_align", self.ROTATE_SECONDS, turn_dir=turn_dir)
-            return self._build_rotate(analysis, turn_dir, "rotate_to_align")
-        self._start_mode("go_straight", 0.0)
-        return self._build_go_straight(analysis)
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            now = time.monotonic()
+            if self._mode == "rotate_to_align" and now >= self._mode_until:
+                drive = min(float(self._settings.get("max_drive", 0.24)), max(self._nudge_drive, float(self._settings.get("forward_floor", 0.16)) * 0.85))
+                left, right = self._forward_pair(drive)
+                self._set_target(left, right, "forward_nudge")
+                self._mode_until = now + self._nudge_duration_s
+            elif self._mode == "forward_nudge" and now >= self._mode_until:
+                self._mode = "idle"
+                self._mode_until = 0.0
+
+            contour_info = None
             try:
-                analysis = self._analyze_step()
-                with self._lock:
-                    self._search_steps = 0
-                    self.last_analysis = analysis
-                    self.last_status = analysis["status"]
-                    self.last_error = None
-                hz = max(4.0, float(self._settings.get("loop_hz", 10.0)))
-                time.sleep(max(AUTO_ANALYSIS_SLEEP_FLOOR_S, 1.0 / hz))
+                if self._camera is None:
+                    raise RuntimeError("Camera unavailable")
+                frame = self._camera.latest_rgb_array()
+                if frame is None:
+                    raise RuntimeError("No camera frame yet")
+                config = self._mask_config.get()
+                contour_info = analyze_detector_contour(
+                    frame,
+                    config,
+                    camera_center_offset=float(self._settings.get("camera_center_offset", 0.0)),
+                )
             except Exception as exc:
-                self._search_steps += 1
-                mode, deadline, turn_dir = self._current_mode()
-                now = time.monotonic()
-                if mode == "search_rotate":
-                    if now >= deadline:
-                        self._start_mode("search_nudge", self.SEARCH_NUDGE_SECONDS, turn_dir=turn_dir)
-                        analysis = self._build_search("search_nudge", f"line lost: {exc}")
-                    else:
-                        analysis = self._build_search("search_rotate", f"line lost: {exc}")
-                elif mode == "search_nudge":
-                    if now >= deadline:
-                        self._start_mode("search_rotate", self.SEARCH_ROTATE_SECONDS, turn_dir=turn_dir)
-                        analysis = self._build_search("search_rotate", f"line lost: {exc}")
-                    else:
-                        analysis = self._build_search("search_nudge", f"line lost: {exc}")
+                if self._mode in {"rotate_to_align", "forward_nudge"} and time.monotonic() < self._mode_until:
+                    analysis = self._continue_episode(contour_info, f"mask unstable during {self._mode}; finish episode")
                 else:
-                    self._start_mode("search_rotate", self.SEARCH_ROTATE_SECONDS, turn_dir=(self._last_steer_sign or self._last_side or 1))
-                    analysis = self._build_search("search_rotate", f"line lost: {exc}")
+                    self._set_target(0.0, 0.0, "wait_mask")
+                    analysis = {
+                        "status": "waiting for stable mask",
+                        "decision": "hold",
+                        "decision_reason": f"mask unstable: {exc}",
+                        "bottom_offset_norm": 0.0,
+                        "offset_norm": 0.0,
+                        "mid_offset_norm": 0.0,
+                        "far_offset_norm": 0.0,
+                        "future_offset_norm": 0.0,
+                        "heading_norm": 0.0,
+                        "curvature_norm": 0.0,
+                        "recenter_priority": 0.0,
+                        "path_span": 0.0,
+                        "angle_deg": 0.0,
+                        "steer": 0.0,
+                        "drive": 0.0,
+                        "left": 0.0,
+                        "right": 0.0,
+                        "x_near": 0.0,
+                        "x_far": 0.0,
+                        "x_shift": 0.0,
+                        "anchor_x": 0.0,
+                        "last_side": 0,
+                        "used_side": 0,
+                        "used_loose": False,
+                        "used_anchor_free": True,
+                        "pose_mode": "contour",
+                        "control_mode": "wait_mask",
+                        "control_phase": "wait_mask",
+                        "search_steps": 0,
+                        "stuck_steps": 0,
+                        "contour_area": 0.0,
+                    }
                 with self._lock:
                     self.last_error = str(exc)
                     self.last_status = analysis["status"]
                     self.last_analysis = analysis
-                time.sleep(0.08)
-        self._set_target(0.0, 0.0, mode="idle")
+                hz = max(4.0, float(self._settings.get("loop_hz", 10.0)))
+                time.sleep(max(AUTO_ANALYSIS_SLEEP_FLOOR_S, 1.0 / hz))
+                continue
 
-    def _analyze_step(self) -> dict[str, float | str]:
-        if self._camera is None or self._rover is None:
-            raise RuntimeError("Camera or serial unavailable.")
-        frame = self._camera.latest_rgb_array()
-        if frame is None:
-            raise RuntimeError("No camera frame yet.")
-        config = self._mask_config.get()
-        prev_x_near = None
-        if self.last_analysis is not None and "x_near" in self.last_analysis:
-            prev_x_near = float(self.last_analysis["x_near"])
-        analysis = analyze_tracking_frame(
-            frame,
-            config,
-            anchor_x=self._anchor_x,
-            last_side=self._last_side,
-            prev_x_near=prev_x_near,
-            camera_center_offset=float(self._settings.get("camera_center_offset", 0.0)),
-            k_offset=float(self._settings.get("k_offset", 0.90)),
-            k_heading=float(self._settings.get("k_heading", 0.70)),
-            k_curve=float(self._settings.get("k_curve", 0.75)),
-        )
-        self._anchor_x = float(analysis["anchor_x"])
-        self._last_side = int(analysis["last_side"])
-        return self._select_target(analysis)
+            offset = float(contour_info["offset_norm"])
+            heading = float(contour_info["heading_norm"])
+            angle_deg = float(contour_info["angle_deg"])
+            center_tol = max(float(self._settings.get("center_tolerance", 0.10)), 0.08)
+            angle_tol_deg = 30.0
 
+            if self._mode in {"rotate_to_align", "forward_nudge"} and time.monotonic() < self._mode_until:
+                analysis = self._continue_episode(contour_info, f"timed {self._mode} episode")
+            else:
+                if abs(offset) <= center_tol and abs(angle_deg) <= angle_tol_deg:
+                    drive = min(float(self._settings.get("max_drive", 0.24)), max(float(self._settings.get("drive", 0.18)), float(self._settings.get("forward_floor", 0.16))))
+                    left, right = self._forward_pair(drive)
+                    self._set_target(left, right, "go_straight")
+                    self._mode_until = 0.0
+                    analysis = {
+                        "status": "following line (go_straight)",
+                        "decision": self._decision_label(left, right),
+                        "decision_reason": f"straight: |offset|={abs(offset):.3f} <= {center_tol:.3f}, |angle|={abs(angle_deg):.1f} <= {angle_tol_deg:.1f}",
+                        "bottom_offset_norm": offset,
+                        "offset_norm": offset,
+                        "mid_offset_norm": offset,
+                        "far_offset_norm": float(np.clip(offset + 0.5 * heading, -1.0, 1.0)),
+                        "future_offset_norm": float(np.clip(offset + heading, -1.0, 1.0)),
+                        "heading_norm": heading,
+                        "curvature_norm": 0.0,
+                        "recenter_priority": 0.0,
+                        "path_span": 0.0,
+                        "angle_deg": angle_deg,
+                        "steer": 0.0,
+                        "drive": float(drive),
+                        "left": float(left),
+                        "right": float(right),
+                        "x_near": float(contour_info["x_bottom"]),
+                        "x_far": float(contour_info["x_top"]),
+                        "x_shift": 0.0,
+                        "anchor_x": float(contour_info["cx"]),
+                        "last_side": 0,
+                        "used_side": 0,
+                        "used_loose": False,
+                        "used_anchor_free": True,
+                        "pose_mode": "contour",
+                        "control_mode": "go_straight",
+                        "control_phase": "steady straight",
+                        "search_steps": 0,
+                        "stuck_steps": 0,
+                        "contour_area": float(contour_info["area"]),
+                    }
+                else:
+                    rotate_dir = 1 if (0.70 * offset + 0.30 * heading) >= 0.0 else -1
+                    self._rotate_dir = rotate_dir
+                    left, right = self._rotate_pair(rotate_dir)
+                    self._set_target(left, right, "rotate_to_align")
+                    self._mode_until = time.monotonic() + self._rotate_duration_s
+                    analysis = {
+                        "status": "following line (rotate_to_align)",
+                        "decision": self._decision_label(left, right),
+                        "decision_reason": f"rotate then nudge: offset={offset:+.3f}, angle={angle_deg:+.1f} deg",
+                        "bottom_offset_norm": offset,
+                        "offset_norm": offset,
+                        "mid_offset_norm": offset,
+                        "far_offset_norm": float(np.clip(offset + 0.5 * heading, -1.0, 1.0)),
+                        "future_offset_norm": float(np.clip(offset + heading, -1.0, 1.0)),
+                        "heading_norm": heading,
+                        "curvature_norm": 0.0,
+                        "recenter_priority": 0.0,
+                        "path_span": 0.0,
+                        "angle_deg": angle_deg,
+                        "steer": float(rotate_dir),
+                        "drive": float((left + right) * 0.5),
+                        "left": float(left),
+                        "right": float(right),
+                        "x_near": float(contour_info["x_bottom"]),
+                        "x_far": float(contour_info["x_top"]),
+                        "x_shift": 0.0,
+                        "anchor_x": float(contour_info["cx"]),
+                        "last_side": int(rotate_dir),
+                        "used_side": int(rotate_dir),
+                        "used_loose": False,
+                        "used_anchor_free": True,
+                        "pose_mode": "contour",
+                        "control_mode": "rotate_to_align",
+                        "control_phase": "timed rotate",
+                        "search_steps": 0,
+                        "stuck_steps": 0,
+                        "contour_area": float(contour_info["area"]),
+                    }
+
+            with self._lock:
+                self.last_error = None
+                self.last_status = analysis["status"]
+                self.last_analysis = analysis
+            hz = max(4.0, float(self._settings.get("loop_hz", 10.0)))
+            time.sleep(max(AUTO_ANALYSIS_SLEEP_FLOOR_S, 1.0 / hz))
 
 def create_app(
     port: str,

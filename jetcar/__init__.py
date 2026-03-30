@@ -10,19 +10,25 @@ from .motion import (
     resolve_directional_speed,
 )
 from .vision import build_lane_mask
-from .yolo import (
-    DEFAULT_YOLO_MODEL,
-    annotated_frame,
-    detection_lines,
-    load_yolo_model,
-    preferred_yolo_device,
-    predict_frame,
-    resolve_yolo_model_path,
-)
+
+_YOLO_EXPORTS = {
+    "DEFAULT_YOLO_MODEL",
+    "annotated_frame",
+    "detection_lines",
+    "load_yolo_model",
+    "preferred_yolo_device",
+    "predict_frame",
+    "resolve_yolo_model_path",
+}
+_TRAINING_EXPORTS = {"PilotDataset", "SmallPilotNet"}
 
 
 def __getattr__(name: str):
-    if name in {"PilotDataset", "SmallPilotNet"}:
+    if name in _YOLO_EXPORTS:
+        from . import yolo
+
+        return getattr(yolo, name)
+    if name in _TRAINING_EXPORTS:
         from .training import PilotDataset, SmallPilotNet
 
         return {"PilotDataset": PilotDataset, "SmallPilotNet": SmallPilotNet}[name]

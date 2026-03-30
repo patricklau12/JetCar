@@ -22,7 +22,7 @@ from jetcar.yolo import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a small YOLO model on the JetCar camera feed.")
-    parser.add_argument("--camera-source", default="usb", choices=["usb", "csi"])
+    parser.add_argument("--camera-source", default="csi", choices=["usb", "csi"])
     parser.add_argument("--sensor-id", type=int, default=0)
     parser.add_argument("--device-index", type=int, default=0)
     parser.add_argument("--width", type=int, default=1280)

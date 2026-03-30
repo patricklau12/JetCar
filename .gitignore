@@ -8,9 +8,16 @@ data/processed/*
 models/*.pt
 models/*.pth
 .teleop_calibration.json
+.teleop_auto_settings.json
 .teleop_mask_config.json
 .teleop_server.log
 .teleop_server.notebook.log
+.teleop_server_article_contour_panel.notebook.log
+.teleop_server_article_contour_panel_with_yolo.notebook.log
+.jetcar_motor_calibration_panel.notebook.log
+.jetcar_motor_calibration.json
+.codex_debug/
+yolo11n.pt
 .tmp_cell4.py
 runs/
 !data/raw/.gitkeep
