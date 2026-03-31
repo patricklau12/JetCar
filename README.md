@@ -9,8 +9,10 @@ The current workshop flow is not "open every notebook one by one." The normal pa
 3. Run the environment check notebook
 4. Launch the motor calibration panel
 5. Save the floor-specific forward and turn presets
-6. Launch the contour-follow panel
+6. Launch the line-following panel
 7. Run the line-following test
+8. Try the default YOLO detection notebook
+9. Try the stop-sign action notebook
 
 The repo now keeps only the beginner notebooks at the top level. Older notebook experiments are stored in `notebooks/archive/`.
 
@@ -23,13 +25,15 @@ If you want the shortest path, follow [docs/beginner-quickstart.md](/home/orin/J
 1. Read [hardware-checklist.md](/home/orin/JetCar/docs/hardware-checklist.md).
 2. Clone the repo, or `git pull` if you already have it.
 3. Create the local Python environment and install packages.
-4. Run [00_environment_check.ipynb](/home/orin/JetCar/notebooks/00_environment_check.ipynb).
-5. Launch [01_motor_calibration_panel.ipynb](/home/orin/JetCar/notebooks/01_motor_calibration_panel.ipynb).
+4. Run [00_package_install_and_check.ipynb](/home/orin/JetCar/notebooks/00_package_install_and_check.ipynb).
+5. Launch [01_motor_speed_tuning.ipynb](/home/orin/JetCar/notebooks/01_motor_speed_tuning.ipynb).
 6. Confirm serial motor control works.
 7. Calibrate `forward`, `rotate_left`, `rotate_right`, and `forward_nudge` until the rover moves reliably on the current floor.
-8. Launch [02_article_contour_follow.ipynb](/home/orin/JetCar/notebooks/02_article_contour_follow.ipynb).
+8. Launch [02_line_following.ipynb](/home/orin/JetCar/notebooks/02_line_following.ipynb).
 9. Confirm the camera feed and contour overlay work.
 10. Run the contour-based line-following test.
+11. Launch [03_line_following_with_default_yolo_detection.ipynb](/home/orin/JetCar/notebooks/03_line_following_with_default_yolo_detection.ipynb) for the default YOLO demo.
+12. Launch [04_line_following_with_stop_sign_action.ipynb](/home/orin/JetCar/notebooks/04_line_following_with_stop_sign_action.ipynb) for stop-sign action tests.
 
 ## Clone Or Update
 
@@ -135,7 +139,7 @@ Different floors have different friction. A speed that works on one floor may be
 
 That means the recommended setup order is:
 
-1. run `00_environment_check.ipynb`
+1. run `00_package_install_and_check.ipynb`
 2. launch the motor calibration panel
 3. save motion presets
 4. launch the contour follow panel
@@ -177,9 +181,11 @@ The tuner writes logs and captured frames under `runs/manual_autotune/`.
 
 The main top-level notebooks are now:
 
-- [00_environment_check.ipynb](/home/orin/JetCar/notebooks/00_environment_check.ipynb) for safe environment and device checks
-- [01_motor_calibration_panel.ipynb](/home/orin/JetCar/notebooks/01_motor_calibration_panel.ipynb) for launching the motor calibration panel and saving motion presets
-- [02_article_contour_follow.ipynb](/home/orin/JetCar/notebooks/02_article_contour_follow.ipynb) for launching the new contour-based article driving panel
+- [00_package_install_and_check.ipynb](/home/orin/JetCar/notebooks/00_package_install_and_check.ipynb) for safe environment and device checks
+- [01_motor_speed_tuning.ipynb](/home/orin/JetCar/notebooks/01_motor_speed_tuning.ipynb) for launching the motor calibration panel and saving motion presets
+- [02_line_following.ipynb](/home/orin/JetCar/notebooks/02_line_following.ipynb) for launching the contour-based line-following panel
+- [03_line_following_with_default_yolo_detection.ipynb](/home/orin/JetCar/notebooks/03_line_following_with_default_yolo_detection.ipynb) for line following with the default `yolo11n.pt` model
+- [04_line_following_with_stop_sign_action.ipynb](/home/orin/JetCar/notebooks/04_line_following_with_stop_sign_action.ipynb) for line following with the stop-sign action panel
 
 Older notebook experiments are kept in [archive/README.md](/home/orin/JetCar/notebooks/archive/README.md).
 

@@ -25,9 +25,11 @@ Students should leave the first session able to:
 
 ## Suggested Teaching Order After Preflight
 
-- use `00_environment_check.ipynb` for basic environment diagnostics
-- use `01_web_panel_intro.ipynb` for the panel command and the panel workflow
-- use `02_yolo_object_detection.ipynb` for a simple computer-vision demo before any custom data collection
+- use `00_package_install_and_check.ipynb` for basic environment diagnostics
+- use `01_motor_speed_tuning.ipynb` for motor calibration and saved presets
+- use `02_line_following.ipynb` for the base contour line-following workflow
+- use `03_line_following_with_default_yolo_detection.ipynb` for a simple default YOLO demo
+- use `04_line_following_with_stop_sign_action.ipynb` for the stop-sign action workflow
 - use `notebooks/archive/` only for older experiments that you intentionally want to revisit
 
 ## Instructor Notes

@@ -51,7 +51,7 @@ python -m ipykernel install --user --name jetcar --display-name "Python (jetcar)
 
 ## 4. Run The Environment Check Notebook
 
-Open [00_environment_check.ipynb](/home/orin/JetCar/notebooks/00_environment_check.ipynb) in Jupyter and run the cells.
+Open [00_package_install_and_check.ipynb](/home/orin/JetCar/notebooks/00_package_install_and_check.ipynb) in Jupyter and run the cells.
 
 That notebook gives you:
 
@@ -70,7 +70,7 @@ python scripts/jetcar_motor_calibration_panel.py --host 0.0.0.0 --http-port 8766
 
 Then open `http://127.0.0.1:8766`.
 
-You can also launch the same panel from [01_motor_calibration_panel.ipynb](/home/orin/JetCar/notebooks/01_motor_calibration_panel.ipynb).
+You can also launch the same panel from [01_motor_speed_tuning.ipynb](/home/orin/JetCar/notebooks/01_motor_speed_tuning.ipynb).
 
 ## 6. Check Serial And Save Calibration Presets
 
@@ -116,7 +116,7 @@ python scripts/teleop_server_article_contour_panel.py --host 0.0.0.0 --http-port
 
 Then open `http://127.0.0.1:8765`.
 
-You can also launch the same panel from [02_article_contour_follow.ipynb](/home/orin/JetCar/notebooks/02_article_contour_follow.ipynb).
+You can also launch the same panel from [02_line_following.ipynb](/home/orin/JetCar/notebooks/02_line_following.ipynb).
 
 ## 8. Check Camera And Start Driving
 
@@ -173,7 +173,9 @@ If the rover moves too hard:
 After the beginner flow is working, you can explore:
 
 - [README.md](/home/orin/JetCar/README.md)
-- [00_environment_check.ipynb](/home/orin/JetCar/notebooks/00_environment_check.ipynb)
-- [01_motor_calibration_panel.ipynb](/home/orin/JetCar/notebooks/01_motor_calibration_panel.ipynb)
-- [02_article_contour_follow.ipynb](/home/orin/JetCar/notebooks/02_article_contour_follow.ipynb)
+- [00_package_install_and_check.ipynb](/home/orin/JetCar/notebooks/00_package_install_and_check.ipynb)
+- [01_motor_speed_tuning.ipynb](/home/orin/JetCar/notebooks/01_motor_speed_tuning.ipynb)
+- [02_line_following.ipynb](/home/orin/JetCar/notebooks/02_line_following.ipynb)
+- [03_line_following_with_default_yolo_detection.ipynb](/home/orin/JetCar/notebooks/03_line_following_with_default_yolo_detection.ipynb)
+- [04_line_following_with_stop_sign_action.ipynb](/home/orin/JetCar/notebooks/04_line_following_with_stop_sign_action.ipynb)
 - [archive/README.md](/home/orin/JetCar/notebooks/archive/README.md)

@@ -6,9 +6,11 @@ They are not the main beginner workflow anymore.
 
 Current beginner path:
 
-1. `../00_environment_check.ipynb`
-2. `../01_web_panel_intro.ipynb`
-3. browser teleop panel for camera check, motor check, calibration, and line-following test
+1. `../00_package_install_and_check.ipynb`
+2. `../01_motor_speed_tuning.ipynb`
+3. `../02_line_following.ipynb`
+4. `../03_line_following_with_default_yolo_detection.ipynb`
+5. `../04_line_following_with_stop_sign_action.ipynb`
 
 Archived notebooks here:
 
