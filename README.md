@@ -19,23 +19,23 @@ The repo now keeps only the beginner notebooks at the top level. Older notebook 
 
 For a brand-new Jetson Orin Nano, follow this order:
 
-1. [docs/start-here-student-guides.md](/home/orin/JetCar/docs/start-here-student-guides.md)
-2. [docs/brand-new-jetson-orin-nano-first-boot.md](/home/orin/JetCar/docs/brand-new-jetson-orin-nano-first-boot.md)
-3. [docs/command-workflow.md](/home/orin/JetCar/docs/command-workflow.md)
+1. [docs/start-here-student-guides.md](docs/start-here-student-guides.md)
+2. [docs/brand-new-jetson-orin-nano-first-boot.md](docs/brand-new-jetson-orin-nano-first-boot.md)
+3. [docs/command-workflow.md](docs/command-workflow.md)
 
 If the Jetson already boots and you just want the project workflow, start directly with:
 
-1. [docs/command-workflow.md](/home/orin/JetCar/docs/command-workflow.md)
+1. [docs/command-workflow.md](docs/command-workflow.md)
 
 If you prefer the older notebook-driven flow, use:
 
-1. [docs/beginner-quickstart.md](/home/orin/JetCar/docs/beginner-quickstart.md)
+1. [docs/beginner-quickstart.md](docs/beginner-quickstart.md)
 
-If you want a second Jetson Orin Nano to match the current board more closely, also read [docs/jetpack-upgrade.md](/home/orin/JetCar/docs/jetpack-upgrade.md) for the live Jetson software snapshot, power mode, service checks, and the local files that are not stored in git.
+If you want a second Jetson Orin Nano to match the current board more closely, also read [docs/jetpack-upgrade.md](docs/jetpack-upgrade.md) for the live Jetson software snapshot, power mode, service checks, and the local files that are not stored in git.
 
 ## Ordered Workflow
 
-The direct command version of the `00`, `01`, `02`, `03`, `04` flow is documented in [docs/command-workflow.md](/home/orin/JetCar/docs/command-workflow.md).
+The direct command version of the `00`, `01`, `02`, `03`, `04` flow is documented in [docs/command-workflow.md](docs/command-workflow.md).
 
 Short version:
 
@@ -226,13 +226,13 @@ The tuner writes logs and captured frames under `runs/manual_autotune/`.
 
 The notebooks still exist, but they are now optional wrappers around the command workflow:
 
-- [00_package_install_and_check.ipynb](/home/orin/JetCar/notebooks/00_package_install_and_check.ipynb) for safe environment and device checks
-- [01_motor_speed_tuning.ipynb](/home/orin/JetCar/notebooks/01_motor_speed_tuning.ipynb) for launching the motor calibration panel and saving motion presets
-- [02_line_following.ipynb](/home/orin/JetCar/notebooks/02_line_following.ipynb) for launching the contour-based line-following panel
-- [03_line_following_with_default_yolo_detection.ipynb](/home/orin/JetCar/notebooks/03_line_following_with_default_yolo_detection.ipynb) for line following with the default `yolo11n.pt` model
-- [04_line_following_with_stop_sign_action.ipynb](/home/orin/JetCar/notebooks/04_line_following_with_stop_sign_action.ipynb) for line following with the stop-sign action panel
+- [00_package_install_and_check.ipynb](notebooks/00_package_install_and_check.ipynb) for safe environment and device checks
+- [01_motor_speed_tuning.ipynb](notebooks/01_motor_speed_tuning.ipynb) for launching the motor calibration panel and saving motion presets
+- [02_line_following.ipynb](notebooks/02_line_following.ipynb) for launching the contour-based line-following panel
+- [03_line_following_with_default_yolo_detection.ipynb](notebooks/03_line_following_with_default_yolo_detection.ipynb) for line following with the default `yolo11n.pt` model
+- [04_line_following_with_stop_sign_action.ipynb](notebooks/04_line_following_with_stop_sign_action.ipynb) for line following with the stop-sign action panel
 
-Older notebook experiments are kept in [archive/README.md](/home/orin/JetCar/notebooks/archive/README.md).
+Older notebook experiments are kept in [archive/README.md](notebooks/archive/README.md).
 
 If you want Jupyter:
 
