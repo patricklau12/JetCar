@@ -20,6 +20,8 @@ The repo now keeps only the beginner notebooks at the top level. Older notebook 
 
 If you want the shortest path, follow [docs/beginner-quickstart.md](/home/orin/JetCar/docs/beginner-quickstart.md).
 
+If you want a second Jetson Orin Nano to match the current board more closely, also read [docs/jetpack-upgrade.md](/home/orin/JetCar/docs/jetpack-upgrade.md) for the live Jetson software snapshot, power mode, service checks, and the local files that are not stored in git.
+
 ## Beginner Workflow
 
 1. Read [hardware-checklist.md](/home/orin/JetCar/docs/hardware-checklist.md).

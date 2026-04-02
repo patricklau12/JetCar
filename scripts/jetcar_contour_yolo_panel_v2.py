@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
-"""Minimal web panel for contour-based line following plus traffic-sign YOLO.
+"""JetCar contour + YOLO panel (v2 smoother steering test).
 
-Adapted to the JetCar/WAVE ROVER setup.
-
-Keeps the project camera/serial setup simple and focuses on:
-- live RGB
-- grayscale / ROI view
-- balanced binary mask
-- contour + vector overlay
-- traffic-sign detection on the full RGB frame
-- stable sign voting so you can test a sign with the JetCar camera first
-- simple auto drive using calibrated motor presets
+This version keeps the same overall project structure, but reduces zig-zag
+behavior on mostly straight lines by:
+- filtering the contour target across frames
+- using hysteresis for lateral shift detection
+- using gentle forward steering for straight-but-off-center cases
+- reducing rotate aggressiveness and disabling post-turn nudge by default
 """
 
 from __future__ import annotations
 
 import argparse
 import atexit
-from collections import Counter, deque
 import json
 import os
 from pathlib import Path
@@ -48,7 +43,7 @@ from jetcar.camera import open_camera, read_rgb_frame
 
 
 CALIBRATION_PATH = PROJECT_ROOT / ".jetcar_motor_calibration.json"
-SETTINGS_PATH = PROJECT_ROOT / ".contour_follow_settings.json"
+SETTINGS_PATH = PROJECT_ROOT / ".contour_follow_settings_v2.json"
 
 DEFAULT_CALIBRATION = {
     "forward": {"left": 0.14, "right": 0.14, "time": 0.20, "note": "steady forward pair"},
@@ -66,11 +61,11 @@ SETTINGS_DEFAULTS = {
     "th_iterations": 10,
     "white_min": 3.0,
     "white_max": 10.0,
-    "turn_angle_deg": 45.0,
-    "shift_max_px": 20.0,
+    "turn_angle_deg": 55.0,
+    "shift_max_px": 28.0,
     "straight_pause_s": 0.05,
-    "nudge_after_turn": True,
-    "turn_step_scale": 2.0,
+    "nudge_after_turn": False,
+    "turn_step_scale": 1.10,
     "erode_iterations": 1,
     "roi_bottom_width": 0.88,
     "roi_top_width": 0.34,
@@ -81,6 +76,13 @@ SETTINGS_DEFAULTS = {
     "center_weight": 70.0,
     "anchor_weight": 95.0,
     "fill_min": 0.05,
+    "target_near_weight": 0.60,
+    "target_far_weight": 0.40,
+    "target_filter_alpha": 0.55,
+    "shift_enter_px": 28.0,
+    "shift_exit_px": 16.0,
+    "straight_steer_gain": 0.040,
+    "straight_steer_max": 0.050,
 }
 
 YOLO_DEFAULT_MODEL = "yolo11n.pt"
@@ -89,33 +91,12 @@ YOLO_DEFAULT_IMGSZ = 640
 YOLO_DEFAULT_EVERY_N = 1
 YOLO_DEFAULT_MAX_DET = 20
 
-SIGN_DEFAULT_VOTE_WINDOW = 5
-SIGN_DEFAULT_VOTE_THRESHOLD = 3
-SIGN_DEFAULT_MIN_CONF = 0.35
-STOP_SIGN_HOLD_S = 3.0
-
-
-def normalize_sign_label(raw_label: str) -> str:
-    s = str(raw_label).strip().lower().replace("_", " ").replace("-", " ")
-    s = " ".join(s.split())
-    if not s:
-        return "unknown"
-    if "left" in s:
-        return "left"
-    if "right" in s:
-        return "right"
-    if "stop" in s:
-        return "stop"
-    if "straight" in s or "ahead" in s or "forward" in s:
-        return "straight"
-    return "unknown"
-
 HTML = """<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>JetCar Contour Follow Panel</title>
+  <title>JetCar Contour Follow Panel v2</title>
   <style>
     :root {
       --bg0: #f4efe7;
@@ -201,15 +182,14 @@ HTML = """<!doctype html>
 <body>
   <div class="wrap">
     <div class="hero">
-      <h1>JetCar Contour + Traffic-Sign YOLO Panel</h1>
-      <p>Keep the current contour-based line following on the lower ROI, run the traffic-sign model on the full RGB frame, and show a stable sign decision from the JetCar camera before you wire it into turning logic.</p>
+      <h1>JetCar Contour + YOLO Panel v2</h1>
+      <p>Same contour + YOLO workflow, but with filtered target tracking, shift hysteresis, and gentler straight-line steering to reduce zig-zag hunting.</p>
       <div class="grid">
         <div class="stat"><div class="label">Server</div><div class="value" id="serverState">starting</div></div>
         <div class="stat"><div class="label">Camera</div><div class="value" id="cameraState">checking</div></div>
         <div class="stat"><div class="label">Serial</div><div class="value" id="serialState">checking</div></div>
         <div class="stat"><div class="label">Auto</div><div class="value" id="autoState">idle</div></div>
         <div class="stat"><div class="label">YOLO</div><div class="value" id="yoloState">checking</div></div>
-        <div class="stat"><div class="label">Stable Sign</div><div class="value" id="signState">none</div></div>
       </div>
     </div>
 
@@ -366,18 +346,15 @@ HTML = """<!doctype html>
             `line_found=${a.line_found}\n` +
             `angle_deg=${a.angle_deg === null ? '-' : a.angle_deg.toFixed(2)}\n` +
             `shift_px=${a.shift_px === null ? '-' : a.shift_px.toFixed(1)}\n` +
+            `target_x=${a.target_x === null ? '-' : a.target_x.toFixed(1)}\n` +
+            `target_x_raw=${a.target_x_raw === null ? '-' : a.target_x_raw.toFixed(1)}\n` +
             `turn_state=${a.turn_state}\n` +
             `shift_state=${a.shift_state}\n` +
             `turn_dir=${a.turn_dir}\n` +
             `turn_val=${a.turn_val.toFixed(3)}\n` +
             `decision=${a.decision}\n` +
             `yolo_count=${a.yolo_count || 0}\n` +
-            `sign_raw=${a.sign_raw_label || '-'}\n` +
-            `sign_group=${a.sign_group || '-'}\n` +
-            `sign_stable=${a.sign_stable || '-'}\n` +
-            `sign_conf=${a.sign_conf === null ? '-' : a.sign_conf.toFixed(2)}\n` +
             `yolo=${yoloNames || '-'}`;
-          document.getElementById('signState').innerText = a.sign_stable || a.sign_group || 'none';
         }
       } catch (err) {
         document.getElementById('serverState').innerText = `error: ${formatError(err)}`;
@@ -552,9 +529,6 @@ class CameraAnalyzer:
         yolo_every_n: int = YOLO_DEFAULT_EVERY_N,
         yolo_device: str = "",
         yolo_max_det: int = YOLO_DEFAULT_MAX_DET,
-        sign_vote_window: int = SIGN_DEFAULT_VOTE_WINDOW,
-        sign_vote_threshold: int = SIGN_DEFAULT_VOTE_THRESHOLD,
-        sign_min_conf: float = SIGN_DEFAULT_MIN_CONF,
     ) -> None:
         self._cap = open_camera(
             source=source,
@@ -571,6 +545,8 @@ class CameraAnalyzer:
         self._jpeg_cache: dict[str, bytes] = {}
         self._stop = threading.Event()
         self._last_target_x: float | None = None
+        self._filtered_target_x: float | None = None
+        self._last_shift_state = 0
         self._frame_index = 0
         self._yolo_model_name = yolo_model_name
         self._yolo_conf = float(yolo_conf)
@@ -582,12 +558,6 @@ class CameraAnalyzer:
         self._yolo_error: str | None = None
         self._yolo_names: dict[int, str] = {}
         self._last_yolo_detections: list[dict[str, Any]] = []
-        self._sign_vote_window = max(1, int(sign_vote_window))
-        self._sign_vote_threshold = max(1, int(sign_vote_threshold))
-        self._sign_min_conf = float(sign_min_conf)
-        self._sign_votes: deque[str] = deque(maxlen=self._sign_vote_window)
-        self._stable_sign: str | None = None
-        self._last_reported_stable_sign: str | None = None
         self._init_yolo()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -600,6 +570,8 @@ class CameraAnalyzer:
             "white_percent": 0.0,
             "angle_deg": None,
             "shift_px": None,
+            "target_x": None,
+            "target_x_raw": None,
             "turn_state": 0,
             "shift_state": 0,
             "turn_dir": 0,
@@ -610,11 +582,6 @@ class CameraAnalyzer:
             "yolo_detections": [],
             "yolo_loaded": False,
             "yolo_error": None,
-            "sign_raw_label": None,
-            "sign_group": None,
-            "sign_stable": None,
-            "sign_conf": None,
-            "sign_votes": [],
         }
 
     @staticmethod
@@ -652,10 +619,6 @@ class CameraAnalyzer:
             "imgsz": self._yolo_imgsz,
             "every_n": self._yolo_every_n,
             "error": self._yolo_error,
-            "classes": self._yolo_names,
-            "sign_vote_window": self._sign_vote_window,
-            "sign_vote_threshold": self._sign_vote_threshold,
-            "sign_min_conf": self._sign_min_conf,
         }
 
     def _infer_yolo(self, frame_bgr: np.ndarray) -> list[dict[str, Any]]:
@@ -702,44 +665,6 @@ class CameraAnalyzer:
         if status_text:
             cv2.putText(out, status_text, (16, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (80, 220, 255), 2, cv2.LINE_AA)
         return out
-
-    def _summarize_sign(self, detections: list[dict[str, Any]]) -> dict[str, Any]:
-        best_det = None
-        if detections:
-            best_det = max(detections, key=lambda d: float(d.get("conf", 0.0)))
-
-        raw_label = None
-        sign_group = None
-        sign_conf = None
-        if best_det is not None:
-            raw_label = str(best_det.get("label", ""))
-            sign_conf = float(best_det.get("conf", 0.0))
-            if sign_conf >= self._sign_min_conf:
-                sign_group = normalize_sign_label(raw_label)
-                self._sign_votes.append(sign_group)
-            else:
-                self._sign_votes.append("none")
-        else:
-            self._sign_votes.append("none")
-
-        stable_sign = None
-        if self._sign_votes:
-            label, count = Counter(self._sign_votes).most_common(1)[0]
-            if label not in {"none", "unknown"} and count >= self._sign_vote_threshold:
-                stable_sign = label
-
-        self._stable_sign = stable_sign
-        if stable_sign != self._last_reported_stable_sign:
-            self._last_reported_stable_sign = stable_sign
-            print(f"[sign] stable={stable_sign} raw={raw_label} conf={sign_conf}", flush=True)
-
-        return {
-            "sign_raw_label": raw_label,
-            "sign_group": sign_group,
-            "sign_stable": stable_sign,
-            "sign_conf": sign_conf,
-            "sign_votes": list(self._sign_votes),
-        }
 
     def latest_analysis(self) -> dict[str, Any]:
         with self._lock:
@@ -805,16 +730,19 @@ class CameraAnalyzer:
         return ret_mask, used_threshold, white_percent
 
     @staticmethod
-    def _get_turn(turn_state: int, shift_state: int, shift_step: float, turn_step: float) -> tuple[int, float]:
+    def _get_turn(turn_state: int, shift_state: int, rotate_time: float, turn_step_scale: float) -> tuple[int, float]:
         turn_dir = 0
         turn_val = 0.0
         if shift_state != 0:
-            turn_dir = shift_state
-            turn_val = shift_step if shift_state != turn_state else turn_step
+            turn_dir = int(shift_state)
+            if shift_state == turn_state and turn_state != 0:
+                turn_val = float(rotate_time) * float(turn_step_scale)
+            else:
+                turn_val = float(rotate_time)
         elif turn_state != 0:
-            turn_dir = turn_state
-            turn_val = turn_step
-        return int(turn_dir), float(turn_val)
+            turn_dir = int(turn_state)
+            turn_val = float(rotate_time) * float(turn_step_scale)
+        return turn_dir, turn_val
 
     @staticmethod
     def _build_center_trapezoid(shape: tuple[int, int], settings: dict[str, Any]) -> np.ndarray:
@@ -924,6 +852,22 @@ class CameraAnalyzer:
                 pts.append((float(xs.mean()), y))
         return pts
 
+
+    def _compute_shift_state(self, shift_px: float, settings: dict[str, Any]) -> int:
+        shift_enter_px = float(settings.get("shift_enter_px", settings.get("shift_max_px", 40.0)))
+        shift_exit_px = float(settings.get("shift_exit_px", max(1.0, 0.55 * shift_enter_px)))
+        prev = int(self._last_shift_state)
+        abs_shift = abs(float(shift_px))
+
+        if prev == 0:
+            if abs_shift > shift_enter_px:
+                return int(np.sign(shift_px))
+            return 0
+
+        if abs_shift < shift_exit_px:
+            return 0
+        return prev
+
     def _analyze(self, frame_bgr: np.ndarray, settings: dict[str, Any]) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
         h, w = frame_bgr.shape[:2]
         crop_top = int(np.clip(float(settings["crop_top_ratio"]), 0.2, 0.85) * h)
@@ -1024,11 +968,28 @@ class CameraAnalyzer:
             if x_mid is None:
                 x_mid = 0.5 * (x_near + x_far)
 
-            target_x = 0.25 * float(x_near) + 0.75 * float(x_far)
+            near_weight = float(settings.get("target_near_weight", 0.60))
+            far_weight = float(settings.get("target_far_weight", 0.40))
+            weight_sum = near_weight + far_weight
+            if weight_sum <= 1e-6:
+                near_weight, far_weight = 0.60, 0.40
+                weight_sum = 1.0
+            near_weight /= weight_sum
+            far_weight /= weight_sum
+
+            target_x_raw = near_weight * float(x_near) + far_weight * float(x_far)
+            alpha = float(np.clip(settings.get("target_filter_alpha", 0.35), 0.0, 1.0))
+            if self._filtered_target_x is None:
+                self._filtered_target_x = float(target_x_raw)
+            else:
+                self._filtered_target_x = float(alpha * target_x_raw + (1.0 - alpha) * self._filtered_target_x)
+
+            target_x = float(self._filtered_target_x)
             self._last_target_x = float(target_x)
             shift_px = target_x - (w / 2.0)
             analysis["shift_px"] = float(shift_px)
             analysis["target_x"] = float(target_x)
+            analysis["target_x_raw"] = float(target_x_raw)
             analysis["x_near"] = float(x_near)
             analysis["x_mid"] = float(x_mid)
             analysis["x_far"] = float(x_far)
@@ -1060,24 +1021,36 @@ class CameraAnalyzer:
             turn_angle_deg = float(settings["turn_angle_deg"])
             if angle_deg < turn_angle_deg or angle_deg > 180.0 - turn_angle_deg:
                 turn_state = int(np.sign(90.0 - angle_deg))
-            shift_state = 0
-            shift_max_px = float(settings["shift_max_px"])
-            if abs(shift_px) > shift_max_px:
-                shift_state = int(np.sign(shift_px))
+
+            shift_state = self._compute_shift_state(shift_px, settings)
+            self._last_shift_state = int(shift_state)
 
             rotate_time = float(DEFAULT_CALIBRATION["rotate_left"]["time"])
-            turn_step = rotate_time * float(settings["turn_step_scale"])
-            shift_step = rotate_time
-            turn_dir, turn_val = self._get_turn(turn_state, shift_state, shift_step, turn_step)
+            turn_dir, turn_val = self._get_turn(
+                turn_state=turn_state,
+                shift_state=shift_state,
+                rotate_time=rotate_time,
+                turn_step_scale=float(settings["turn_step_scale"]),
+            )
+
+            if turn_dir != 0:
+                decision = "turn"
+            elif shift_state != 0:
+                decision = "steer"
+            else:
+                decision = "straight"
+
             analysis.update({
                 "turn_state": int(turn_state),
                 "shift_state": int(shift_state),
                 "turn_dir": int(turn_dir),
                 "turn_val": float(turn_val),
-                "decision": "turn" if turn_dir != 0 else "straight",
+                "decision": decision,
             })
         else:
             self._last_target_x = None
+            self._filtered_target_x = None
+            self._last_shift_state = 0
             analysis["decision"] = "wait"
 
         return analysis, {
@@ -1098,20 +1071,11 @@ class CameraAnalyzer:
                     detections = self._infer_yolo(frame)
                 else:
                     detections = self._last_yolo_detections
-                sign_summary = self._summarize_sign(detections)
                 analysis["yolo_count"] = int(len(detections))
                 analysis["yolo_detections"] = detections[:8]
                 analysis["yolo_loaded"] = bool(self._yolo_model is not None)
                 analysis["yolo_error"] = self._yolo_error
-                analysis.update(sign_summary)
-                status_parts = []
-                if self._yolo_model is None:
-                    status_parts.append(f"YOLO offline: {self._yolo_error}")
-                elif sign_summary.get("sign_stable"):
-                    status_parts.append(f"SIGN: {sign_summary['sign_stable'].upper()}")
-                elif sign_summary.get("sign_group"):
-                    status_parts.append(f"CANDIDATE: {sign_summary['sign_group']}")
-                yolo_status = " | ".join(status_parts) if status_parts else None
+                yolo_status = None if self._yolo_model is not None else f"YOLO offline: {self._yolo_error}"
                 debug_images["rgb"] = self._draw_yolo_boxes(frame, detections, status_text=yolo_status)
                 jpeg_cache = {name: self._encode_jpeg(img) for name, img in debug_images.items()}
                 with self._lock:
@@ -1137,7 +1101,6 @@ class AutoController:
         self.last_status = "idle"
         self.last_error: str | None = None
         self.last_action: dict[str, Any] = {}
-        self._stop_sign_latched = False
 
     def status_payload(self) -> dict[str, Any]:
         with self._lock:
@@ -1146,7 +1109,6 @@ class AutoController:
                 "last_status": self.last_status,
                 "last_error": self.last_error,
                 "last_action": json.loads(json.dumps(self.last_action)),
-                "stop_sign_latched": bool(self._stop_sign_latched),
             }
 
     def start(self) -> dict[str, Any]:
@@ -1158,7 +1120,6 @@ class AutoController:
             if self._thread is not None and self._thread.is_alive():
                 raise RuntimeError("Auto is already running.")
             self._stop.clear()
-            self._stop_sign_latched = False
             self.running = True
             self.last_status = "starting"
             self.last_error = None
@@ -1180,7 +1141,6 @@ class AutoController:
         with self._lock:
             self.running = False
             self.last_status = "stopped"
-            self._stop_sign_latched = False
         return self.status_payload()
 
     def _run_preset(self, name: str) -> dict[str, Any]:
@@ -1191,78 +1151,11 @@ class AutoController:
             raise RuntimeError(f"missing calibration preset: {name}")
         return self._rover.pulse(float(preset["left"]), float(preset["right"]), float(preset["time"]))
 
-    def _hold_stop(self, duration_s: float) -> None:
-        if self._rover is None:
-            return
-        end_time = time.monotonic() + float(duration_s)
-        while not self._stop.is_set():
-            remaining = end_time - time.monotonic()
-            if remaining <= 0:
-                break
-            self._rover.send(0.0, 0.0)
-            time.sleep(min(0.08, remaining))
-        self._rover.send(0.0, 0.0)
-
-    def _latest_analysis(self) -> dict[str, Any]:
-        return self._analyzer.latest_analysis() if self._analyzer is not None else {}
-
-    def _handle_stop_sign(self, analysis: dict[str, Any] | None = None) -> bool:
-        analysis = analysis if analysis is not None else self._latest_analysis()
-        stable_sign = analysis.get("sign_stable")
-        if stable_sign == "stop":
-            if self._stop_sign_latched:
-                with self._lock:
-                    self.last_status = "stop sign ignored until cleared"
-                    self.last_action = {
-                        "decision": "stop_sign_ignored_same_sign",
-                        "analysis": analysis,
-                    }
-                return False
-            self._stop_sign_latched = True
-            with self._lock:
-                self.last_status = f"stop sign detected: hold {STOP_SIGN_HOLD_S:.1f}s"
-                self.last_action = {
-                    "decision": "stop_sign_hold",
-                    "hold_s": float(STOP_SIGN_HOLD_S),
-                    "analysis": analysis,
-                }
-            print(f"[auto] stop hold triggered for {STOP_SIGN_HOLD_S:.1f}s", flush=True)
-            self._hold_stop(STOP_SIGN_HOLD_S)
-            return True
-        if self._stop_sign_latched:
-            self._stop_sign_latched = False
-        return False
-
-    def _drive_for(self, left: float, right: float, duration_s: float, refresh_s: float = 0.04, stop_at_end: bool = False) -> bool:
-        if self._rover is None:
-            return False
-        duration_s = max(0.0, float(duration_s))
-        refresh_s = max(0.01, float(refresh_s))
-        deadline = time.monotonic() + duration_s
-        sent_drive = False
-        while not self._stop.is_set():
-            if self._handle_stop_sign():
-                return True
-            remaining = deadline - time.monotonic()
-            if remaining <= 0 and sent_drive:
-                break
-            self._rover.send(left, right)
-            sent_drive = True
-            if remaining <= 0:
-                break
-            time.sleep(min(refresh_s, remaining))
-        if stop_at_end:
-            self._rover.send(0.0, 0.0)
-        return False
-
     def _run(self) -> None:
         straight_pause_s = lambda: float(self._settings_store.get().get("straight_pause_s", 0.05))
         while not self._stop.is_set():
             try:
-                analysis = self._latest_analysis()
-                if self._handle_stop_sign(analysis):
-                    continue
-
+                analysis = self._analyzer.latest_analysis() if self._analyzer is not None else {}
                 if not analysis.get("line_found"):
                     if self._rover is not None:
                         self._rover.send(0.0, 0.0)
@@ -1272,30 +1165,63 @@ class AutoController:
                     time.sleep(0.06)
                     continue
 
+                calibration = self._calibration_store.get()
+                settings = self._settings_store.get()
+                turn_state = int(analysis.get("turn_state", 0))
+                shift_state = int(analysis.get("shift_state", 0))
                 turn_dir = int(analysis.get("turn_dir", 0))
                 turn_val = float(analysis.get("turn_val", 0.0))
-                calibration = self._calibration_store.get()
+                shift_px = float(analysis.get("shift_px", 0.0) or 0.0)
+
+                if turn_state == 0 and shift_state != 0:
+                    forward = calibration["forward"]
+                    shift_enter_px = float(settings.get("shift_enter_px", settings.get("shift_max_px", 40.0)))
+                    straight_steer_gain = float(settings.get("straight_steer_gain", 0.040))
+                    straight_steer_max = float(settings.get("straight_steer_max", 0.050))
+                    steer_scale = min(1.0, abs(shift_px) / max(1.0, shift_enter_px))
+                    steer_mag = min(straight_steer_max, straight_steer_gain * steer_scale)
+                    steer = steer_mag * float(np.sign(shift_state))
+                    left = float(np.clip(float(forward["left"]) + steer, -0.5, 0.5))
+                    right = float(np.clip(float(forward["right"]) - steer, -0.5, 0.5))
+                    if self._rover is not None:
+                        self._rover.send(left, right)
+                    with self._lock:
+                        self.last_status = "following line (gentle steer)"
+                        self.last_action = {
+                            "decision": "steer",
+                            "left": left,
+                            "right": right,
+                            "steer": steer,
+                            "shift_px": shift_px,
+                            "analysis": analysis,
+                        }
+                    time.sleep(straight_pause_s())
+                    continue
+
                 if turn_dir == 0:
                     forward = calibration["forward"]
+                    if self._rover is not None:
+                        self._rover.send(float(forward["left"]), float(forward["right"]))
                     with self._lock:
                         self.last_status = "following line (straight)"
                         self.last_action = {"decision": "straight", "preset": "forward", "analysis": analysis}
-                    if self._drive_for(float(forward["left"]), float(forward["right"]), straight_pause_s(), refresh_s=0.04, stop_at_end=False):
-                        continue
+                    time.sleep(straight_pause_s())
                     continue
 
                 preset_name = "rotate_right" if turn_dir > 0 else "rotate_left"
                 preset = calibration[preset_name]
                 rotate_time = max(float(preset["time"]), turn_val)
-                if self._drive_for(float(preset["left"]), float(preset["right"]), rotate_time, refresh_s=0.04, stop_at_end=True):
-                    continue
-                do_nudge = bool(self._settings_store.get().get("nudge_after_turn", True))
+                if self._rover is not None:
+                    self._rover.pulse(float(preset["left"]), float(preset["right"]), rotate_time)
+
+                do_nudge = bool(settings.get("nudge_after_turn", False))
                 if do_nudge and not self._stop.is_set():
                     nudge = calibration["forward_nudge"]
-                    if self._drive_for(float(nudge["left"]), float(nudge["right"]), float(nudge["time"]), refresh_s=0.04, stop_at_end=True):
-                        continue
+                    if self._rover is not None:
+                        self._rover.pulse(float(nudge["left"]), float(nudge["right"]), float(nudge["time"]))
+
                 with self._lock:
-                    self.last_status = "following line (turn+nudge)"
+                    self.last_status = "following line (rotate)"
                     self.last_action = {
                         "decision": "turn",
                         "preset": preset_name,
@@ -1372,7 +1298,7 @@ def free_listening_port(port: int) -> list[int]:
     return pids
 
 
-def create_app(port: str, baudrate: int, camera_source: str, sensor_id: int, device_index: int, width: int, height: int, warmup_frames: int, yolo_model: str, yolo_conf: float, yolo_imgsz: int, yolo_every_n: int, yolo_device: str, yolo_max_det: int, sign_vote_window: int, sign_vote_threshold: int, sign_min_conf: float) -> Flask:
+def create_app(port: str, baudrate: int, camera_source: str, sensor_id: int, device_index: int, width: int, height: int, warmup_frames: int, yolo_model: str, yolo_conf: float, yolo_imgsz: int, yolo_every_n: int, yolo_device: str, yolo_max_det: int) -> Flask:
     calibration_store = JSONStore(CALIBRATION_PATH, DEFAULT_CALIBRATION)
     settings_store = JSONStore(SETTINGS_PATH, SETTINGS_DEFAULTS)
 
@@ -1386,7 +1312,7 @@ def create_app(port: str, baudrate: int, camera_source: str, sensor_id: int, dev
     analyzer = None
     camera_error = None
     try:
-        analyzer = CameraAnalyzer(camera_source, sensor_id, device_index, width, height, warmup_frames, settings_store, yolo_model_name=yolo_model, yolo_conf=yolo_conf, yolo_imgsz=yolo_imgsz, yolo_every_n=yolo_every_n, yolo_device=yolo_device, yolo_max_det=yolo_max_det, sign_vote_window=sign_vote_window, sign_vote_threshold=sign_vote_threshold, sign_min_conf=sign_min_conf)
+        analyzer = CameraAnalyzer(camera_source, sensor_id, device_index, width, height, warmup_frames, settings_store, yolo_model_name=yolo_model, yolo_conf=yolo_conf, yolo_imgsz=yolo_imgsz, yolo_every_n=yolo_every_n, yolo_device=yolo_device, yolo_max_det=yolo_max_det)
     except Exception as exc:
         camera_error = str(exc)
 
@@ -1440,13 +1366,17 @@ def create_app(port: str, baudrate: int, camera_source: str, sensor_id: int, dev
     @app.post("/api/settings")
     def api_update_settings() -> Response:
         data = request.get_json(force=True)
+        shift_enter_px = float(data.get("shift_max_px", SETTINGS_DEFAULTS["shift_max_px"]))
+        shift_exit_px = max(1.0, 0.55 * shift_enter_px)
         updated = state.settings_store.update({
             "crop_top_ratio": float(data.get("crop_top_ratio", SETTINGS_DEFAULTS["crop_top_ratio"])),
             "threshold": int(data.get("threshold", SETTINGS_DEFAULTS["threshold"])),
             "white_min": float(data.get("white_min", SETTINGS_DEFAULTS["white_min"])),
             "white_max": float(data.get("white_max", SETTINGS_DEFAULTS["white_max"])),
             "turn_angle_deg": float(data.get("turn_angle_deg", SETTINGS_DEFAULTS["turn_angle_deg"])),
-            "shift_max_px": float(data.get("shift_max_px", SETTINGS_DEFAULTS["shift_max_px"])),
+            "shift_max_px": shift_enter_px,
+            "shift_enter_px": shift_enter_px,
+            "shift_exit_px": shift_exit_px,
         })
         return jsonify(updated)
 
@@ -1499,9 +1429,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yolo-every-n", type=int, default=YOLO_DEFAULT_EVERY_N)
     parser.add_argument("--yolo-device", default="")
     parser.add_argument("--yolo-max-det", type=int, default=YOLO_DEFAULT_MAX_DET)
-    parser.add_argument("--sign-vote-window", type=int, default=SIGN_DEFAULT_VOTE_WINDOW)
-    parser.add_argument("--sign-vote-threshold", type=int, default=SIGN_DEFAULT_VOTE_THRESHOLD)
-    parser.add_argument("--sign-min-conf", type=float, default=SIGN_DEFAULT_MIN_CONF)
     return parser.parse_args()
 
 
@@ -1510,7 +1437,7 @@ def main() -> int:
     freed = free_listening_port(args.http_port)
     if freed:
         print(f"Freed port {args.http_port} from PIDs: {', '.join(str(pid) for pid in freed)}")
-    app = create_app(args.port, args.baudrate, args.camera_source, args.sensor_id, args.device_index, args.width, args.height, args.warmup_frames, args.yolo_model, args.yolo_conf, args.yolo_imgsz, args.yolo_every_n, args.yolo_device, args.yolo_max_det, args.sign_vote_window, args.sign_vote_threshold, args.sign_min_conf)
+    app = create_app(args.port, args.baudrate, args.camera_source, args.sensor_id, args.device_index, args.width, args.height, args.warmup_frames, args.yolo_model, args.yolo_conf, args.yolo_imgsz, args.yolo_every_n, args.yolo_device, args.yolo_max_det)
     app.run(host=args.host, port=args.http_port, debug=False, threaded=True)
     return 0
 

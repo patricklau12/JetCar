@@ -60,6 +60,31 @@ That notebook gives you:
 - CUDA and Torch visibility checks
 - camera and serial device checks
 
+## 4.5 Match The Current Workshop Board
+
+If you want a second Orin Nano to behave like the current board instead of only "running the repo", match these machine-level details too:
+
+- Jetson Linux is currently `36.4.7` on the `r36.4` APT channel.
+- The Python env is `/home/orin/JetCar/.venv` and it was created with `python3 -m venv --system-site-packages .venv`.
+- `nvpmodel -q` currently reports `15W`.
+- The current user has serial access through the `dialout` group and camera access through the `video` group.
+- For CSI camera use, `nvargus-daemon` is enabled and active.
+- The active serial device is `/dev/ttyTHS1`.
+- The current USB camera shows up as `/dev/video0`.
+
+Important: a plain `git clone` does not include the local behavior files below because they are intentionally ignored:
+
+- `.jetcar_motor_calibration.json`
+- `.teleop_auto_settings.json`
+- `yolo11n.pt`
+
+So on a new board you must either:
+
+1. copy those files from the current board
+2. or regenerate them by re-running motor calibration, auto tuning, and YOLO model setup
+
+For the full live board snapshot and version notes, see [jetpack-upgrade.md](/home/orin/JetCar/docs/jetpack-upgrade.md).
+
 ## 5. Launch The Motor Calibration Panel
 
 ```bash
