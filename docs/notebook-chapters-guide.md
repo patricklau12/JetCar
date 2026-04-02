@@ -2,6 +2,11 @@
 
 This page explains the purpose of each beginner notebook in `JetCar/notebooks/`.
 
+Important:
+- the repo is now command-first
+- the notebooks are optional wrappers around the same scripts
+- the default runtime path is automatic hardware detection
+
 It is written like a small wiki chapter guide:
 - what problem each notebook solves
 - what script it launches
@@ -62,7 +67,7 @@ Before debugging algorithms, first debug the machine.
 - Python imports such as `numpy`, `cv2`, `torch`, `flask`, `serial`, `ultralytics`
 - CUDA visibility through PyTorch
 - camera devices like `/dev/video*`
-- serial devices like `/dev/ttyTHS1`
+- serial devices like `/dev/ttyUSB0` or `/dev/ttyTHS1`
 - whether saved JSON configuration files already exist
 
 ### What success looks like
@@ -83,6 +88,9 @@ Notebook:
 
 Launches:
 - `scripts/jetcar_motor_calibration_panel.py`
+
+Default runtime behavior:
+- `--port auto` selects a working rover serial connection automatically
 
 Writes:
 - `.jetcar_motor_calibration.json`
@@ -135,6 +143,10 @@ Notebook:
 
 Launches:
 - `scripts/teleop_server_article_contour_panel.py`
+
+Default runtime behavior:
+- `--port auto` selects USB serial or GPIO UART automatically
+- `--camera-source auto` tries CSI first and falls back to a working USB camera
 
 Reads:
 - `.jetcar_motor_calibration.json`
@@ -189,6 +201,10 @@ Notebook:
 Launches:
 - `scripts/teleop_server_article_contour_panel_with_yolo.py`
 
+Default runtime behavior:
+- `--port auto` selects USB serial or GPIO UART automatically
+- `--camera-source auto` tries CSI first and falls back to a working USB camera
+
 Typical model:
 - `yolo11n.pt`
 
@@ -228,6 +244,10 @@ Notebook:
 
 Launches:
 - `scripts/jetcar_contour_sign_panel.py`
+
+Default runtime behavior:
+- `--port auto` selects USB serial or GPIO UART automatically
+- `--camera-source auto` tries CSI first and falls back to a working USB camera
 
 Typical model:
 - `models/traffic_sign_detector.pt`

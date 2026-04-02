@@ -1,4 +1,4 @@
-# Brand-New Jetson Orin Nano: First Boot Guide
+# Chapter 0: Brand-New Jetson Orin Nano First Boot Guide
 
 This guide is for the person who has a **brand-new Jetson Orin Nano Developer Kit** and has not even booted it once.
 
@@ -29,7 +29,7 @@ If NVIDIA changes the exact image name, JetPack version label, or download butto
 
 ---
 
-# 1. What you need
+## 0.1 What You Need
 
 Prepare these items first:
 
@@ -50,7 +50,7 @@ Prepare these items first:
 
 ---
 
-# 2. The easiest first-boot path
+## 0.2 The Easiest First-Boot Path
 
 For a complete beginner, the easiest path is usually:
 
@@ -72,7 +72,7 @@ For classroom or first-time workshop use, **Option A is usually easier**.
 
 ---
 
-# 3. Prepare the microSD card
+## 0.3 Prepare The microSD Card
 
 On your normal computer:
 
@@ -90,7 +90,7 @@ You must **flash / image** the card using the proper tool so the card becomes bo
 
 ---
 
-# 4. Insert the card and connect the hardware
+## 0.4 Insert The Card And Connect The Hardware
 
 With power disconnected:
 
@@ -105,7 +105,7 @@ Because it avoids confusion during setup and reduces the chance of hot-plug mist
 
 ---
 
-# 5. First power-on
+## 0.5 First Power-On
 
 Now power on the Jetson.
 
@@ -120,7 +120,7 @@ Do not panic immediately if it is not instant.
 
 ---
 
-# 6. Complete the first-boot Ubuntu wizard
+## 0.6 Complete The First-Boot Ubuntu Wizard
 
 The first-boot wizard usually asks for things like:
 - language
@@ -147,7 +147,7 @@ Do not rely on memory.
 
 ---
 
-# 7. Get to the desktop and verify the basics
+## 0.7 Get To The Desktop And Verify The Basics
 
 Once the first-boot wizard is done and the desktop appears, check these basics:
 
@@ -167,7 +167,7 @@ Make sure the basic desktop session is stable before doing anything complicated.
 
 ---
 
-# 8. The first terminal commands to run
+## 0.8 The First Terminal Commands To Run
 
 After you reach the desktop, open a terminal and run:
 
@@ -203,7 +203,7 @@ The main goal is to confirm the board really booted into the NVIDIA Jetson softw
 
 ---
 
-# 9. Update carefully
+## 0.9 Update Carefully
 
 Once the internet works, do a basic package refresh:
 
@@ -225,7 +225,7 @@ If you are following a class or workshop image, it is often safer to confirm the
 
 ---
 
-# 10. Create a working folder for projects
+## 0.10 Create A Working Folder For Projects
 
 A clean beginner habit is to keep projects under the home folder.
 
@@ -252,7 +252,7 @@ So if you are using the username `orin`, the repo path becomes:
 
 ---
 
-# 11. Ready the Jetson for serial projects
+## 0.11 Ready The Jetson For Serial Projects
 
 Because JetCar uses serial communication to the rover controller, this is a good early check.
 

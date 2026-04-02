@@ -28,6 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from jetcar.camera import open_camera, read_rgb_frame
+from jetcar.hardware import resolve_camera_selection, resolve_serial_port
 from jetcar.motion import MotionCalibration, apply_drive_calibration
 from jetcar.vision import build_lane_mask
 
@@ -4266,17 +4267,28 @@ def create_app(
 ) -> Flask:
     mask_config = MaskConfig()
     auto_settings = AutoSettings()
+    resolved_port = resolve_serial_port(port, baudrate=baudrate)
+    camera_selection = resolve_camera_selection(camera_source, sensor_id, device_index, width, height, warmup_frames)
     rover = None
     rover_error = None
     try:
-        rover = RoverSerial(port, baudrate)
+        rover = RoverSerial(resolved_port, baudrate)
     except Exception as exc:
         rover_error = str(exc)
 
     camera = None
     camera_error = None
     try:
-        camera = CameraFeed(camera_source, sensor_id, device_index, width, height, warmup_frames, mask_config, auto_settings)
+        camera = CameraFeed(
+            camera_selection.source,
+            camera_selection.sensor_id,
+            camera_selection.device_index,
+            width,
+            height,
+            warmup_frames,
+            mask_config,
+            auto_settings,
+        )
     except Exception as exc:
         camera_error = str(exc)
 
@@ -4285,9 +4297,9 @@ def create_app(
         rover_error=rover_error,
         camera=camera,
         camera_error=camera_error,
-        port=port,
+        port=resolved_port,
         baudrate=baudrate,
-        camera_source=camera_source,
+        camera_source=camera_selection.source,
         width=width,
         height=height,
         auto_settings=auto_settings,
@@ -4723,11 +4735,11 @@ def free_stale_teleop_servers() -> list[int]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a local joystick teleop server.")
-    parser.add_argument("--port", default="/dev/ttyTHS1")
+    parser.add_argument("--port", default="auto")
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--http-port", type=int, default=8765)
-    parser.add_argument("--camera-source", default="csi", choices=["usb", "csi"])
+    parser.add_argument("--camera-source", default="auto", choices=["auto", "usb", "csi"])
     parser.add_argument("--sensor-id", type=int, default=0)
     parser.add_argument("--device-index", type=int, default=0)
     parser.add_argument("--width", type=int, default=1280)

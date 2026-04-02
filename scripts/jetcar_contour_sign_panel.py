@@ -45,6 +45,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from jetcar.camera import open_camera, read_rgb_frame
+from jetcar.hardware import resolve_camera_selection, resolve_serial_port
 
 
 CALIBRATION_PATH = PROJECT_ROOT / ".jetcar_motor_calibration.json"
@@ -1375,22 +1376,53 @@ def free_listening_port(port: int) -> list[int]:
 def create_app(port: str, baudrate: int, camera_source: str, sensor_id: int, device_index: int, width: int, height: int, warmup_frames: int, yolo_model: str, yolo_conf: float, yolo_imgsz: int, yolo_every_n: int, yolo_device: str, yolo_max_det: int, sign_vote_window: int, sign_vote_threshold: int, sign_min_conf: float) -> Flask:
     calibration_store = JSONStore(CALIBRATION_PATH, DEFAULT_CALIBRATION)
     settings_store = JSONStore(SETTINGS_PATH, SETTINGS_DEFAULTS)
+    resolved_port = resolve_serial_port(port, baudrate=baudrate)
+    camera_selection = resolve_camera_selection(camera_source, sensor_id, device_index, width, height, warmup_frames)
 
     rover = None
     rover_error = None
     try:
-        rover = RoverSerial(port, baudrate)
+        rover = RoverSerial(resolved_port, baudrate)
     except Exception as exc:
         rover_error = str(exc)
 
     analyzer = None
     camera_error = None
     try:
-        analyzer = CameraAnalyzer(camera_source, sensor_id, device_index, width, height, warmup_frames, settings_store, yolo_model_name=yolo_model, yolo_conf=yolo_conf, yolo_imgsz=yolo_imgsz, yolo_every_n=yolo_every_n, yolo_device=yolo_device, yolo_max_det=yolo_max_det, sign_vote_window=sign_vote_window, sign_vote_threshold=sign_vote_threshold, sign_min_conf=sign_min_conf)
+        analyzer = CameraAnalyzer(
+            camera_selection.source,
+            camera_selection.sensor_id,
+            camera_selection.device_index,
+            width,
+            height,
+            warmup_frames,
+            settings_store,
+            yolo_model_name=yolo_model,
+            yolo_conf=yolo_conf,
+            yolo_imgsz=yolo_imgsz,
+            yolo_every_n=yolo_every_n,
+            yolo_device=yolo_device,
+            yolo_max_det=yolo_max_det,
+            sign_vote_window=sign_vote_window,
+            sign_vote_threshold=sign_vote_threshold,
+            sign_min_conf=sign_min_conf,
+        )
     except Exception as exc:
         camera_error = str(exc)
 
-    state = AppState(rover, rover_error, analyzer, camera_error, port, baudrate, camera_source, width, height, calibration_store, settings_store)
+    state = AppState(
+        rover,
+        rover_error,
+        analyzer,
+        camera_error,
+        resolved_port,
+        baudrate,
+        camera_selection.source,
+        width,
+        height,
+        calibration_store,
+        settings_store,
+    )
     app = Flask(__name__)
     atexit.register(state.close)
 
@@ -1483,11 +1515,11 @@ def create_app(port: str, baudrate: int, camera_source: str, sensor_id: int, dev
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run contour-based line-follow panel.")
-    parser.add_argument("--port", default="/dev/ttyTHS1")
+    parser.add_argument("--port", default="auto")
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--http-port", type=int, default=8765)
-    parser.add_argument("--camera-source", default="csi", choices=["usb", "csi"])
+    parser.add_argument("--camera-source", default="auto", choices=["auto", "usb", "csi"])
     parser.add_argument("--sensor-id", type=int, default=0)
     parser.add_argument("--device-index", type=int, default=0)
     parser.add_argument("--width", type=int, default=1280)

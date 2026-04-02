@@ -1,12 +1,14 @@
 # Start Here: Student Guides
 
+This page is the first doc GitHub visitors should follow.
+
 If you are new to Jetson, robot cars, or this repo, start with these pages.
 
 They are ordered from the most basic setup step to the more advanced project concepts.
 
 ---
 
-## 1. If your Jetson Orin Nano is brand new
+## Chapter 0. If your Jetson Orin Nano is brand new
 
 Read this first:
 
@@ -22,21 +24,34 @@ It explains:
 
 ---
 
-## 2. If the Jetson already boots and you want the project workflow
+## Chapter 1. If the Jetson already boots and you want the project workflow
+
+Read this next:
+
+- [Command Workflow](./command-workflow.md)
+
+Use this to understand:
+- which command to run first
+- what each chapter does
+- what order to follow
+- when you are ready to move on
+
+---
+
+## Chapter 2. If you want the chapter-by-chapter learning version
 
 Read this next:
 
 - [Notebook Chapters for Students](./notebook-chapters-for-students.md)
 
 Use this to understand:
-- which notebook to open first
-- what each notebook does
+- what each learning chapter does
 - what you should learn from each chapter
-- when you are ready to move on
+- how the old notebook flow maps to the project
 
 ---
 
-## 3. If you want to understand how the line-following algorithm works
+## Chapter 3. If you want to understand how the line-following algorithm works
 
 Read this next:
 
@@ -51,7 +66,7 @@ Use this to understand:
 
 ---
 
-## 4. If you want the more structured maintainer/teacher versions
+## Chapter 4. If you want the more structured maintainer or teacher versions
 
 These pages are more formal and a bit more detailed:
 
@@ -66,7 +81,7 @@ These are useful for:
 
 ---
 
-## 5. Core repo quickstart
+## Chapter 5. Supporting docs
 
 After reading the pages above, you can continue with the existing quickstart and repo docs:
 
@@ -77,11 +92,11 @@ After reading the pages above, you can continue with the existing quickstart and
 
 ## Recommended order for a complete beginner
 
-1. first-boot guide
-2. beginner quickstart
-3. notebook chapters for students
-4. line following explained for students
-5. then start notebook `00`
+1. Chapter 0: first-boot guide
+2. Chapter 1: command workflow
+3. Chapter 2: notebook chapters for students
+4. Chapter 3: line following explained for students
+5. then start command chapter `00`
 
 That order is usually the least confusing path.
 

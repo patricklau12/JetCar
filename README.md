@@ -2,40 +2,48 @@
 
 JetCar is a beginner-friendly robot car project for NVIDIA Jetson Orin Nano.
 
-The current workshop flow is not "open every notebook one by one." The normal path is:
+The simplest workflow is now command-first, not notebook-first:
 
 1. Pull the repo
 2. Install the Python environment
-3. Run the environment check notebook
+3. Run the device check command
 4. Launch the motor calibration panel
 5. Save the floor-specific forward and turn presets
 6. Launch the line-following panel
-7. Run the line-following test
-8. Try the default YOLO detection notebook
-9. Try the stop-sign action notebook
+7. Launch the YOLO line-following panel if needed
+8. Launch the stop-sign panel if needed
 
 The repo now keeps only the beginner notebooks at the top level. Older notebook experiments are stored in `notebooks/archive/`.
 
 ## Start Here
 
-If you want the shortest path, follow [docs/beginner-quickstart.md](/home/orin/JetCar/docs/beginner-quickstart.md).
+For a brand-new Jetson Orin Nano, follow this order:
+
+1. [docs/start-here-student-guides.md](/home/orin/JetCar/docs/start-here-student-guides.md)
+2. [docs/brand-new-jetson-orin-nano-first-boot.md](/home/orin/JetCar/docs/brand-new-jetson-orin-nano-first-boot.md)
+3. [docs/command-workflow.md](/home/orin/JetCar/docs/command-workflow.md)
+
+If the Jetson already boots and you just want the project workflow, start directly with:
+
+1. [docs/command-workflow.md](/home/orin/JetCar/docs/command-workflow.md)
+
+If you prefer the older notebook-driven flow, use:
+
+1. [docs/beginner-quickstart.md](/home/orin/JetCar/docs/beginner-quickstart.md)
 
 If you want a second Jetson Orin Nano to match the current board more closely, also read [docs/jetpack-upgrade.md](/home/orin/JetCar/docs/jetpack-upgrade.md) for the live Jetson software snapshot, power mode, service checks, and the local files that are not stored in git.
 
-## Beginner Workflow
+## Ordered Workflow
 
-1. Read [hardware-checklist.md](/home/orin/JetCar/docs/hardware-checklist.md).
-2. Clone the repo, or `git pull` if you already have it.
-3. Create the local Python environment and install packages.
-4. Run [00_package_install_and_check.ipynb](/home/orin/JetCar/notebooks/00_package_install_and_check.ipynb).
-5. Launch [01_motor_speed_tuning.ipynb](/home/orin/JetCar/notebooks/01_motor_speed_tuning.ipynb).
-6. Confirm serial motor control works.
-7. Calibrate `forward`, `rotate_left`, `rotate_right`, and `forward_nudge` until the rover moves reliably on the current floor.
-8. Launch [02_line_following.ipynb](/home/orin/JetCar/notebooks/02_line_following.ipynb).
-9. Confirm the camera feed and contour overlay work.
-10. Run the contour-based line-following test.
-11. Launch [03_line_following_with_default_yolo_detection.ipynb](/home/orin/JetCar/notebooks/03_line_following_with_default_yolo_detection.ipynb) for the default YOLO demo.
-12. Launch [04_line_following_with_stop_sign_action.ipynb](/home/orin/JetCar/notebooks/04_line_following_with_stop_sign_action.ipynb) for stop-sign action tests.
+The direct command version of the `00`, `01`, `02`, `03`, `04` flow is documented in [docs/command-workflow.md](/home/orin/JetCar/docs/command-workflow.md).
+
+Short version:
+
+1. Chapter `00`: check the Jetson environment and devices.
+2. Chapter `01`: run `jetcar_motor_calibration_panel.py`.
+3. Chapter `02`: run `teleop_server_article_contour_panel.py`.
+4. Chapter `03`: run `teleop_server_article_contour_panel_with_yolo.py`.
+5. Chapter `04`: run `jetcar_contour_sign_panel.py`.
 
 ## Clone Or Update
 
@@ -58,54 +66,89 @@ git pull
 
 ```bash
 cd /home/orin/JetCar
-python3 -m venv --system-site-packages .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install -r requirements-notebook.txt
-python -m pip install --force-reinstall --index-url https://pypi.jetson-ai-lab.io/jp6/cu126 torch==2.8.0 torchvision==0.23.0
-python -m pip install --force-reinstall "numpy<2"
-python -m pip install -e .
-python -m ipykernel install --user --name jetcar --display-name "Python (jetcar)"
+bash scripts/install_jetcar.sh
 ```
 
-## Run The Motor Calibration Panel
+## 00. Device Check
 
 ```bash
 cd /home/orin/JetCar
 source /home/orin/JetCar/.venv/bin/activate
-python scripts/jetcar_motor_calibration_panel.py --host 0.0.0.0 --http-port 8766 --port /dev/ttyTHS1
+python scripts/check_jetcar_env.py
 ```
 
-Then open:
+## 01. Motor Calibration
+
+```bash
+cd /home/orin/JetCar
+source /home/orin/JetCar/.venv/bin/activate
+python scripts/jetcar_motor_calibration_panel.py \
+  --port auto \
+  --http-port 8766
+```
+
+Open:
 
 - `http://127.0.0.1:8766` on the Jetson itself
 - `http://JETSON_IP:8766` from another device on the same network
 
-This panel is only for motor preset tuning. It writes `.jetcar_motor_calibration.json`.
+This writes `.jetcar_motor_calibration.json`.
 
-## Run The Contour Follow Panel
-
-USB camera:
+## 02. Line Following
 
 ```bash
 cd /home/orin/JetCar
 source /home/orin/JetCar/.venv/bin/activate
-python scripts/teleop_server_article_contour_panel.py --host 0.0.0.0 --http-port 8765 --camera-source usb --port /dev/ttyTHS1
+python scripts/teleop_server_article_contour_panel.py \
+  --port auto \
+  --camera-source auto \
+  --http-port 8765
 ```
 
-CSI camera:
-
-```bash
-cd /home/orin/JetCar
-source /home/orin/JetCar/.venv/bin/activate
-python scripts/teleop_server_article_contour_panel.py --host 0.0.0.0 --http-port 8765 --camera-source csi --port /dev/ttyTHS1
-```
-
-Then open:
+Open:
 
 - `http://127.0.0.1:8765` on the Jetson itself
 - `http://JETSON_IP:8765` from another device on the same network
+
+## 03. Line Following With Default YOLO
+
+```bash
+cd /home/orin/JetCar
+source /home/orin/JetCar/.venv/bin/activate
+python scripts/teleop_server_article_contour_panel_with_yolo.py \
+  --port auto \
+  --camera-source auto \
+  --http-port 8765
+```
+
+Open:
+
+- `http://127.0.0.1:8765` on the Jetson itself
+- `http://JETSON_IP:8765` from another device on the same network
+
+Note:
+
+- the default `yolo11n.pt` model can be auto-downloaded on first use if it is not already present locally
+
+## 04. Stop Sign Action
+
+```bash
+cd /home/orin/JetCar
+source /home/orin/JetCar/.venv/bin/activate
+python scripts/jetcar_contour_sign_panel.py \
+  --port auto \
+  --camera-source auto \
+  --http-port 8765
+```
+
+Open:
+
+- `http://127.0.0.1:8765` on the Jetson itself
+- `http://JETSON_IP:8765` from another device on the same network
+
+This flow expects the repo model file:
+
+- `models/traffic_sign_detector.pt`
 
 ## What To Do In The Calibration Panel
 
@@ -181,7 +224,7 @@ The tuner writes logs and captured frames under `runs/manual_autotune/`.
 
 ## Optional Notebooks
 
-The main top-level notebooks are now:
+The notebooks still exist, but they are now optional wrappers around the command workflow:
 
 - [00_package_install_and_check.ipynb](/home/orin/JetCar/notebooks/00_package_install_and_check.ipynb) for safe environment and device checks
 - [01_motor_speed_tuning.ipynb](/home/orin/JetCar/notebooks/01_motor_speed_tuning.ipynb) for launching the motor calibration panel and saving motion presets

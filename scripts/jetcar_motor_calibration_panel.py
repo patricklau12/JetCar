@@ -37,6 +37,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from jetcar.hardware import resolve_serial_port
+
 CALIBRATION_DEFAULTS = {
     "forward": {"left": 0.16, "right": 0.16, "time": 0.50, "note": "steady forward pair"},
     "rotate_left": {"left": -0.10, "right": 0.40, "time": 0.30, "note": "pure rotate left"},
@@ -456,14 +458,15 @@ def free_listening_port(port: int) -> list[int]:
 
 
 def create_app(port: str, baudrate: int) -> Flask:
+    resolved_port = resolve_serial_port(port, baudrate=baudrate)
     rover = None
     rover_error = None
     try:
-        rover = RoverSerial(port, baudrate)
+        rover = RoverSerial(resolved_port, baudrate)
     except Exception as exc:
         rover_error = str(exc)
 
-    state = AppState(rover=rover, rover_error=rover_error, port=port, baudrate=baudrate)
+    state = AppState(rover=rover, rover_error=rover_error, port=resolved_port, baudrate=baudrate)
     app = Flask(__name__)
     atexit.register(state.close)
 
@@ -530,7 +533,7 @@ def create_app(port: str, baudrate: int) -> Flask:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the JetCar motor calibration web panel.")
-    parser.add_argument("--port", default="/dev/ttyTHS1")
+    parser.add_argument("--port", default="auto")
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--http-port", type=int, default=8766)

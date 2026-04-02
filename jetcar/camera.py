@@ -185,15 +185,24 @@ def open_camera(
             ) from exc
 
     if source == "usb":
-        cap = cv2.VideoCapture(f"/dev/video{device_index}", cv2.CAP_V4L2)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        if not cap.isOpened():
+        candidates = [
+            cv2.VideoCapture(device_index, cv2.CAP_V4L2),
+            cv2.VideoCapture(f"/dev/video{device_index}", cv2.CAP_V4L2),
+        ]
+        cap = None
+        for candidate in candidates:
+            candidate.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            candidate.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            candidate.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            if candidate.isOpened():
+                cap = candidate
+                break
+            candidate.release()
+        if cap is None:
             video_devices = ", ".join(sorted(glob.glob("/dev/video*"))) or "none"
             raise RuntimeError(
                 "Could not open USB RGB camera. "
-                f"Tried /dev/video{device_index}; detected video devices: {video_devices}."
+                f"Tried /dev/video{device_index} and index {device_index}; detected video devices: {video_devices}."
             )
         for _ in range(max(warmup_frames, 0)):
             cap.read()

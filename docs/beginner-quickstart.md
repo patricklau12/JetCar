@@ -5,8 +5,8 @@ This guide is for the simplest workshop setup.
 Goal:
 
 1. get the repo
-2. install the environment
-3. run the environment check notebook
+2. install one project environment
+3. run the environment check script
 4. calibrate motor motion
 5. launch the contour-follow panel
 6. run a line-following test
@@ -38,24 +38,22 @@ git pull
 
 ```bash
 cd /home/orin/JetCar
-python3 -m venv --system-site-packages .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install -r requirements-notebook.txt
-python -m pip install --force-reinstall --index-url https://pypi.jetson-ai-lab.io/jp6/cu126 torch==2.8.0 torchvision==0.23.0
-python -m pip install --force-reinstall "numpy<2"
-python -m pip install -e .
-python -m ipykernel install --user --name jetcar --display-name "Python (jetcar)"
+bash scripts/install_jetcar.sh
 ```
 
-## 4. Run The Environment Check Notebook
+## 4. Run The Environment Check
 
-Open [00_package_install_and_check.ipynb](/home/orin/JetCar/notebooks/00_package_install_and_check.ipynb) in Jupyter and run the cells.
+```bash
+cd /home/orin/JetCar
+source /home/orin/JetCar/.venv/bin/activate
+python scripts/check_jetcar_env.py
+```
 
-That notebook gives you:
+If you prefer Jupyter, you can still open [00_package_install_and_check.ipynb](/home/orin/JetCar/notebooks/00_package_install_and_check.ipynb), but the direct script above is now the main path.
 
-- the exact install commands if `.venv` is missing or broken
+The environment check gives you:
+
+- package import checks for the main runtime and notebook dependencies
 - import checks for the main Python packages
 - CUDA and Torch visibility checks
 - camera and serial device checks
@@ -69,8 +67,8 @@ If you want a second Orin Nano to behave like the current board instead of only 
 - `nvpmodel -q` currently reports `15W`.
 - The current user has serial access through the `dialout` group and camera access through the `video` group.
 - For CSI camera use, `nvargus-daemon` is enabled and active.
-- The active serial device is `/dev/ttyTHS1`.
-- The current USB camera shows up as `/dev/video0`.
+- The rover may be reached either through USB serial such as `/dev/ttyUSB0` or through Jetson GPIO UART such as `/dev/ttyTHS1`.
+- The camera may be CSI or USB, depending on the board and workshop setup.
 
 Important: a plain `git clone` does not include the local behavior files below because they are intentionally ignored:
 
@@ -94,6 +92,14 @@ python scripts/jetcar_motor_calibration_panel.py --host 0.0.0.0 --http-port 8766
 ```
 
 Then open `http://127.0.0.1:8766`.
+
+Recommended command:
+
+```bash
+cd /home/orin/JetCar
+source /home/orin/JetCar/.venv/bin/activate
+python scripts/jetcar_motor_calibration_panel.py --host 0.0.0.0 --http-port 8766 --port auto
+```
 
 You can also launch the same panel from [01_motor_speed_tuning.ipynb](/home/orin/JetCar/notebooks/01_motor_speed_tuning.ipynb).
 
@@ -123,20 +129,12 @@ The saved values are written to `.jetcar_motor_calibration.json`.
 
 ## 7. Launch The Contour Follow Panel
 
-USB camera:
+Recommended command:
 
 ```bash
 cd /home/orin/JetCar
 source /home/orin/JetCar/.venv/bin/activate
-python scripts/teleop_server_article_contour_panel.py --host 0.0.0.0 --http-port 8765 --camera-source usb --port /dev/ttyTHS1
-```
-
-CSI camera:
-
-```bash
-cd /home/orin/JetCar
-source /home/orin/JetCar/.venv/bin/activate
-python scripts/teleop_server_article_contour_panel.py --host 0.0.0.0 --http-port 8765 --camera-source csi --port /dev/ttyTHS1
+python scripts/teleop_server_article_contour_panel.py --host 0.0.0.0 --http-port 8765 --camera-source auto --port auto
 ```
 
 Then open `http://127.0.0.1:8765`.
@@ -173,7 +171,7 @@ Then check:
 If the camera image is black:
 
 - wait for warmup
-- confirm the correct camera source
+- if you forced a camera source manually, switch back to `--camera-source auto`
 - confirm the camera is seated properly
 
 If the contour or mask is bad:

@@ -1,6 +1,13 @@
 """JetCar workshop helpers."""
 
 from .camera import gstreamer_pipeline, open_camera, read_rgb_frame
+from .hardware import (
+    CameraSelection,
+    resolve_camera_selection,
+    resolve_serial_port,
+    serial_candidates,
+    usb_video_device_indices,
+)
 from .motion import (
     CALIBRATION_DEFAULTS,
     CALIBRATION_PATH,
@@ -38,6 +45,11 @@ __all__ = [
     "gstreamer_pipeline",
     "open_camera",
     "read_rgb_frame",
+    "CameraSelection",
+    "resolve_camera_selection",
+    "resolve_serial_port",
+    "serial_candidates",
+    "usb_video_device_indices",
     "build_lane_mask",
     "DEFAULT_YOLO_MODEL",
     "preferred_yolo_device",
